@@ -232,6 +232,18 @@ test("HerdrClient getAgent reads the current durable session reference", async (
   assert.deepEqual(args, ["agent", "get", "worker"]);
 });
 
+test("HerdrClient reads global pane focus state", async () => {
+  let args: string[] | undefined;
+  const runner: HerdrCommandRunner = async (invocation) => {
+    args = invocation.args;
+    return jsonOutput({ pane: { focused: false } });
+  };
+  const client = new HerdrClient(runner, { HERDR_ENV: "1" });
+
+  assert.equal(await client.paneIsFocused("w1:p1"), false);
+  assert.deepEqual(args, ["pane", "get", "w1:p1"]);
+});
+
 test("HerdrClient parses current and split pane IDs", async () => {
   const calls: string[][] = [];
   const runner: HerdrCommandRunner = async (invocation) => {

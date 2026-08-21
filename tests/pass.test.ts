@@ -107,7 +107,7 @@ test("resolveClaudeTranscriptPath maps cwd and rejects unsafe session IDs", () =
   );
 });
 
-test("launchPiPass starts, prompts, then focuses the destination", async () => {
+test("launchPiPass focuses when the origin remains focused", async () => {
   const calls: HerdrInvocation[] = [];
   const runner = createPassRunner(calls);
   const client = new HerdrClient(runner, { HERDR_ENV: "1" });
@@ -166,12 +166,13 @@ test("launchPiPass starts, prompts, then focuses the destination", async () => {
         "--timeout",
         "30000",
       ],
+      ["pane", "get", "w1:p1"],
       ["agent", "focus", "portr-pass-test"],
     ],
   );
 });
 
-test("launchClaudePass starts, prompts, then focuses the destination", async () => {
+test("launchClaudePass focuses when the origin remains focused", async () => {
   const calls: HerdrInvocation[] = [];
   const runner = createPassRunner(calls);
   const client = new HerdrClient(runner, { HERDR_ENV: "1" });
@@ -230,8 +231,94 @@ test("launchClaudePass starts, prompts, then focuses the destination", async () 
         "--timeout",
         "30000",
       ],
+      ["pane", "get", "w1:p1"],
       ["agent", "focus", "portr-pass-claude-test"],
     ],
+  );
+});
+
+test("launchPiPass preserves user focus after the origin loses focus", async () => {
+  const calls: HerdrInvocation[] = [];
+  const runner: HerdrCommandRunner = async (invocation) => {
+    calls.push(invocation);
+    if (invocation.args[1] === "split") {
+      return jsonOutput({ pane: { pane_id: "w1:p2" } });
+    }
+    if (invocation.args[1] === "get") {
+      return jsonOutput({
+        pane:
+          invocation.args[2] === "w1:p1"
+            ? { focused: false }
+            : { terminal_id: "term-2" },
+      });
+    }
+    if (invocation.args[1] === "prompt") {
+      return jsonOutput({
+        agent: { agent_status: "working", pane_id: "w1:p2" },
+      });
+    }
+    return jsonOutput({ ok: true });
+  };
+  const client = new HerdrClient(runner, { HERDR_ENV: "1" });
+
+  assert.deepEqual(
+    await launchPiPass(client, {
+      originPaneId: "w1:p1",
+      cwd: "/tmp/project",
+      agentName: "portr-pass-test",
+      prompt: "Approved handoff",
+    }),
+    { agentName: "portr-pass-test", paneId: "w1:p2" },
+  );
+  assert.equal(
+    calls.some((call) => call.args[1] === "focus"),
+    false,
+  );
+  assert.equal(
+    calls.some(
+      (call) =>
+        call.args[0] === "pane" &&
+        call.args[1] === "get" &&
+        call.args[2] === "w1:p1",
+    ),
+    true,
+  );
+});
+
+test("launchPiPass preserves user focus when origin focus cannot be verified", async () => {
+  const calls: HerdrInvocation[] = [];
+  const runner: HerdrCommandRunner = async (invocation) => {
+    calls.push(invocation);
+    if (invocation.args[1] === "split") {
+      return jsonOutput({ pane: { pane_id: "w1:p2" } });
+    }
+    if (invocation.args[1] === "get") {
+      if (invocation.args[2] === "w1:p1") {
+        throw new Error("focus state unavailable");
+      }
+      return jsonOutput({ pane: { terminal_id: "term-2" } });
+    }
+    if (invocation.args[1] === "prompt") {
+      return jsonOutput({
+        agent: { agent_status: "working", pane_id: "w1:p2" },
+      });
+    }
+    return jsonOutput({ ok: true });
+  };
+  const client = new HerdrClient(runner, { HERDR_ENV: "1" });
+
+  assert.deepEqual(
+    await launchPiPass(client, {
+      originPaneId: "w1:p1",
+      cwd: "/tmp/project",
+      agentName: "portr-pass-test",
+      prompt: "Approved handoff",
+    }),
+    { agentName: "portr-pass-test", paneId: "w1:p2" },
+  );
+  assert.equal(
+    calls.some((call) => call.args[1] === "focus"),
+    false,
   );
 });
 
@@ -361,7 +448,12 @@ function createPassRunner(calls: HerdrInvocation[]): HerdrCommandRunner {
       return jsonOutput({ pane: { pane_id: "w1:p2" } });
     }
     if (invocation.args[1] === "get") {
-      return jsonOutput({ pane: { terminal_id: "term-2" } });
+      return jsonOutput({
+        pane:
+          invocation.args[2] === "w1:p1"
+            ? { focused: true }
+            : { terminal_id: "term-2" },
+      });
     }
     if (invocation.args[1] === "prompt") {
       return jsonOutput({

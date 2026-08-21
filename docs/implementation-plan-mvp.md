@@ -28,7 +28,7 @@ Pi origin -- approved semantic context --> destination
 - Show it in an editor before launching the destination.
 - Saving the editor confirms the exact transfer; cancelling stops the operation.
 - Launch the destination in a visible pane.
-- Focus the destination only after its prompt is delivered successfully.
+- Focus the destination only after its prompt is delivered successfully and only if the origin pane remains focused.
 - Keep the origin session intact.
 - Do not return a result automatically.
 
@@ -349,7 +349,7 @@ Deliver one complete user flow:
 5. preflight Herdr;
 6. split without focus using a fixed direction;
 7. launch Pi and submit the approved handoff;
-8. focus only after successful prompt delivery.
+8. focus only after successful prompt delivery and while the origin remains focused.
 
 Verify manually:
 
@@ -446,7 +446,7 @@ For every operation, report which stage failed and any safe references already c
 
 - Never report truncated or ambiguous output as a complete result.
 - Never treat `blocked` or `unknown` as success.
-- Never focus a pass destination before prompt delivery succeeds.
+- Never focus a pass destination before prompt delivery succeeds or after the user has moved focus away from the origin.
 - Never destroy panes or child sessions automatically after uncertain failure.
 - Never inject a full destination transcript into the origin model context.
 - Never log transferred context by default.

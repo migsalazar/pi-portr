@@ -169,7 +169,11 @@ export async function launchPiPass(
     await promptPassDestination(herdr, options.agentName, options.prompt);
 
     stage = "focus";
-    await herdr.focus(options.agentName);
+    await focusDestinationIfOriginRemainsFocused(
+      herdr,
+      options.originPaneId,
+      options.agentName,
+    );
 
     return { agentName: options.agentName, paneId };
   } catch (error) {
@@ -212,11 +216,32 @@ export async function launchClaudePass(
     await promptPassDestination(herdr, options.agentName, options.prompt);
 
     stage = "focus";
-    await herdr.focus(options.agentName);
+    await focusDestinationIfOriginRemainsFocused(
+      herdr,
+      options.originPaneId,
+      options.agentName,
+    );
 
     return { agentName: options.agentName, paneId };
   } catch (error) {
     throw new PassLaunchError(stage, options.agentName, paneId, error);
+  }
+}
+
+async function focusDestinationIfOriginRemainsFocused(
+  herdr: HerdrClient,
+  originPaneId: string,
+  agentName: string,
+): Promise<void> {
+  let originIsFocused: boolean;
+  try {
+    originIsFocused = await herdr.paneIsFocused(originPaneId);
+  } catch {
+    return;
+  }
+
+  if (originIsFocused) {
+    await herdr.focus(agentName);
   }
 }
 

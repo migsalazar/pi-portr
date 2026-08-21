@@ -112,6 +112,11 @@ export class HerdrClient {
     return { paneId: readPaneId(result, "pane split") };
   }
 
+  async paneIsFocused(paneId: string): Promise<boolean> {
+    const result = await this.execute(["pane", "get", paneId]);
+    return readPaneFocused(result, "pane get");
+  }
+
   async startPi(
     agentName: string,
     paneId: string,
@@ -423,6 +428,25 @@ function readTerminalId(result: unknown, operation: string): string {
   }
 
   return terminalId;
+}
+
+function readPaneFocused(result: unknown, operation: string): boolean {
+  if (!isRecord(result) || !isRecord(result.pane)) {
+    throw new HerdrCommandError(
+      operation,
+      `Herdr response for ${operation} did not include a pane`,
+    );
+  }
+
+  const focused = result.pane.focused;
+  if (typeof focused !== "boolean") {
+    throw new HerdrCommandError(
+      operation,
+      `Herdr response for ${operation} did not include focus state`,
+    );
+  }
+
+  return focused;
 }
 
 function readAgent(result: unknown, operation: string): HerdrAgent {
