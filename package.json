@@ -1,0 +1,44 @@
+{
+  "name": "pi-portr",
+  "version": "0.1.0",
+  "description": "Hand off work and ask questions across visible, independent agent sessions.",
+  "type": "module",
+  "license": "MIT",
+  "engines": {
+    "node": ">=22.19.0"
+  },
+  "keywords": [
+    "pi-package",
+    "pi-extension",
+    "herdr",
+    "agents",
+    "handoff"
+  ],
+  "files": [
+    "src",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "test": "node --test --experimental-strip-types tests/*.test.ts",
+    "typecheck": "tsc --noEmit",
+    "lint": "biome lint src tests",
+    "format": "biome format --write src tests package.json tsconfig.json biome.json",
+    "format:check": "biome format src tests package.json tsconfig.json biome.json",
+    "check": "npm run typecheck && npm run lint && npm run format:check && npm test"
+  },
+  "pi": {
+    "extensions": [
+      "./src/index.ts"
+    ]
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-coding-agent": ">=0.84.0"
+  },
+  "devDependencies": {
+    "@biomejs/biome": "2.5.9",
+    "@earendil-works/pi-coding-agent": "0.84.2",
+    "@types/node": "22.20.1",
+    "typescript": "7.0.2"
+  }
+}
