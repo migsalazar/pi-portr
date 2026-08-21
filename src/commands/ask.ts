@@ -1,10 +1,15 @@
 import { randomUUID } from "node:crypto";
+import { readFileSync, statSync } from "node:fs";
 import {
   type ExtensionAPI,
   type ExtensionCommandContext,
   type ExtensionContext,
   SessionManager,
 } from "@earendil-works/pi-coding-agent";
+import {
+  buildClaudeLaunchArgs,
+  resolveClaudeTranscriptPath,
+} from "../claude-target.ts";
 import {
   boundText,
   buildTransferContext,
@@ -31,10 +36,13 @@ import {
 
 const ASK_WAIT_TIMEOUT_MS = 300_000;
 const ASK_RECOVERY_ACTIVITY_WAIT_MS = 5_000;
+const ASK_RESULT_RETRY_TIMEOUT_MS = 2_000;
+const ASK_RESULT_RETRY_INTERVAL_MS = 100;
 const MAX_QUESTION_CHARACTERS = 20_000;
 const MAX_ASK_PROMPT_CHARACTERS = 90_000;
 export const MAX_RETURN_ANSWER_CHARACTERS = 40_000;
 const QUESTION_EXCERPT_CHARACTERS = 1_000;
+const MAX_CLAUDE_TRANSCRIPT_BYTES = 64 * 1024 * 1024;
 
 export type AskTarget = "pi" | "claude";
 
@@ -49,15 +57,16 @@ export interface AskArguments {
 export type AskLaunchStage = "split" | "start" | "prompt_wait";
 
 export interface AskLaunchResult {
+  target: AskTarget;
   agentName: string;
   paneId: string;
-  sessionPath: string;
+  childSession: string;
   status: "idle" | "done";
 }
 
 export interface AskResultMetadata {
   operationId: string;
-  target: "pi";
+  target: AskTarget;
   agentName: string;
   paneId: string;
   childSession: string;
@@ -84,7 +93,7 @@ export class AskLaunchError extends Error {
   readonly agentName: string;
   readonly paneId: string | undefined;
   readonly status: HerdrAgentStatus | undefined;
-  readonly sessionPath: string | undefined;
+  readonly childSession: string | undefined;
 
   constructor(
     stage: AskLaunchStage,
@@ -94,12 +103,11 @@ export class AskLaunchError extends Error {
     agent?: HerdrAgent,
   ) {
     const resolvedPaneId = agent?.paneId ?? paneId;
+    const childSession = agent?.sessionPath ?? agent?.sessionId;
     const references = [
       resolvedPaneId === undefined ? undefined : `pane ${resolvedPaneId}`,
       stage === "split" ? undefined : `agent name ${agentName}`,
-      agent?.sessionPath === undefined
-        ? undefined
-        : `child session ${agent.sessionPath}`,
+      childSession === undefined ? undefined : `child session ${childSession}`,
     ]
       .filter((value) => value !== undefined)
       .join(", ");
@@ -114,7 +122,7 @@ export class AskLaunchError extends Error {
     this.agentName = agentName;
     this.paneId = resolvedPaneId;
     this.status = agent?.status;
-    this.sessionPath = agent?.sessionPath;
+    this.childSession = childSession;
   }
 }
 
@@ -292,6 +300,41 @@ export async function startPiAskDestination(
   }
 }
 
+export async function startClaudeAskDestination(
+  herdr: HerdrClient,
+  options: {
+    originPaneId: string;
+    cwd: string;
+    agentName: string;
+    model?: string;
+  },
+): Promise<AskDestination> {
+  let stage: AskLaunchStage = "split";
+  let paneId: string | undefined;
+
+  try {
+    const pane = await herdr.splitPane({
+      paneId: options.originPaneId,
+      cwd: options.cwd,
+      direction: "right",
+    });
+    paneId = pane.paneId;
+
+    stage = "start";
+    await herdr.startClaude(
+      options.agentName,
+      paneId,
+      buildClaudeLaunchArgs({
+        readOnly: true,
+        ...(options.model === undefined ? {} : { model: options.model }),
+      }),
+    );
+    return { agentName: options.agentName, paneId };
+  } catch (error) {
+    throw new AskLaunchError(stage, options.agentName, paneId, error);
+  }
+}
+
 export async function launchPiAsk(
   herdr: HerdrClient,
   options: {
@@ -311,7 +354,40 @@ export async function launchPiAsk(
       options.prompt,
       options.timeoutMs ?? ASK_WAIT_TIMEOUT_MS,
     );
-    return resolveSettledAskAgent(destination, agent);
+    return resolveSettledAskAgent("pi", destination, agent);
+  } catch (error) {
+    if (error instanceof AskLaunchError) {
+      throw error;
+    }
+    throw new AskLaunchError(
+      "prompt_wait",
+      destination.agentName,
+      destination.paneId,
+      error,
+    );
+  }
+}
+
+export async function launchClaudeAsk(
+  herdr: HerdrClient,
+  options: {
+    originPaneId: string;
+    cwd: string;
+    agentName: string;
+    prompt: string;
+    timeoutMs?: number;
+    model?: string;
+  },
+): Promise<AskLaunchResult> {
+  const destination = await startClaudeAskDestination(herdr, options);
+
+  try {
+    const agent = await herdr.promptAndWait(
+      destination.agentName,
+      options.prompt,
+      options.timeoutMs ?? ASK_WAIT_TIMEOUT_MS,
+    );
+    return resolveSettledAskAgent("claude", destination, agent);
   } catch (error) {
     if (error instanceof AskLaunchError) {
       throw error;
@@ -326,6 +402,7 @@ export async function launchPiAsk(
 }
 
 function resolveSettledAskAgent(
+  target: AskTarget,
   destination: AskDestination,
   agent: HerdrAgent,
 ): AskLaunchResult {
@@ -347,20 +424,22 @@ function resolveSettledAskAgent(
       agent,
     );
   }
-  if (agent.sessionPath === undefined) {
+  const childSession = target === "pi" ? agent.sessionPath : agent.sessionId;
+  if (childSession === undefined) {
     throw new AskLaunchError(
       "prompt_wait",
       destination.agentName,
       destination.paneId,
-      new Error("Herdr did not provide the child Pi session path"),
+      new Error(`Herdr did not provide the child ${target} session reference`),
       agent,
     );
   }
 
   return {
+    target,
     agentName: destination.agentName,
     paneId: agent.paneId,
-    sessionPath: agent.sessionPath,
+    childSession,
     status: agent.status,
   };
 }
@@ -417,8 +496,141 @@ export function extractPiSessionAnswer(sessionPath: string): string {
   }
 }
 
+export function extractClaudeTranscriptAnswer(transcript: string): string {
+  const records: unknown[] = [];
+  for (const line of transcript.split("\n")) {
+    if (line.trim().length === 0) {
+      continue;
+    }
+    try {
+      records.push(JSON.parse(line));
+    } catch (error) {
+      throw new AskResultError(
+        "Child Claude transcript contains invalid JSON",
+        {
+          cause: error,
+        },
+      );
+    }
+  }
+
+  let finalIndex = -1;
+  let finalRecord: Record<string, unknown> | undefined;
+  for (let index = records.length - 1; index >= 0; index -= 1) {
+    const record = records[index];
+    if (
+      isRecord(record) &&
+      record.type === "assistant" &&
+      record.isSidechain !== true
+    ) {
+      finalIndex = index;
+      finalRecord = record;
+      break;
+    }
+  }
+
+  if (finalRecord === undefined || !isRecord(finalRecord.message)) {
+    throw new AskResultError(
+      "Child Claude session contained no assistant answer",
+    );
+  }
+  if (finalRecord.message.role !== "assistant") {
+    throw new AskResultError(
+      "Final Claude transcript record has an invalid role",
+    );
+  }
+  if (finalRecord.message.stop_reason !== "end_turn") {
+    throw new AskResultError(
+      `Final Claude assistant message is incomplete (${String(finalRecord.message.stop_reason ?? "unknown")})`,
+    );
+  }
+  if (
+    typeof finalRecord.uuid !== "string" ||
+    typeof finalRecord.message.id !== "string" ||
+    !Array.isArray(finalRecord.message.content)
+  ) {
+    throw new AskResultError(
+      "Final Claude assistant message has invalid content",
+    );
+  }
+
+  const hasTurnCompletion = records
+    .slice(finalIndex + 1)
+    .some(
+      (record) =>
+        isRecord(record) &&
+        record.type === "system" &&
+        record.subtype === "turn_duration" &&
+        record.parentUuid === finalRecord.uuid,
+    );
+  if (!hasTurnCompletion) {
+    throw new AskResultError(
+      "Child Claude transcript does not contain a durable turn completion marker",
+    );
+  }
+
+  const messageId = finalRecord.message.id;
+  const answer = sanitizeTransferText(
+    records
+      .flatMap((record) => {
+        if (
+          !isRecord(record) ||
+          record.type !== "assistant" ||
+          record.isSidechain === true ||
+          !isRecord(record.message) ||
+          record.message.id !== messageId ||
+          !Array.isArray(record.message.content)
+        ) {
+          return [];
+        }
+        return record.message.content.flatMap((block) =>
+          isRecord(block) &&
+          block.type === "text" &&
+          typeof block.text === "string"
+            ? [block.text]
+            : [],
+        );
+      })
+      .join("\n"),
+  ).trim();
+
+  if (answer.length === 0) {
+    throw new AskResultError(
+      "Final Claude assistant message contained no text",
+    );
+  }
+  return answer;
+}
+
+export function extractClaudeSessionAnswer(
+  sessionId: string,
+  cwd: string,
+): string {
+  const transcriptPath = resolveClaudeTranscriptPath(cwd, sessionId);
+  try {
+    const stats = statSync(transcriptPath);
+    if (!stats.isFile()) {
+      throw new AskResultError("Child Claude transcript is not a regular file");
+    }
+    if (stats.size > MAX_CLAUDE_TRANSCRIPT_BYTES) {
+      throw new AskResultError(
+        `Child Claude transcript exceeds ${MAX_CLAUDE_TRANSCRIPT_BYTES} bytes`,
+      );
+    }
+    return extractClaudeTranscriptAnswer(readFileSync(transcriptPath, "utf8"));
+  } catch (error) {
+    if (error instanceof AskResultError) {
+      throw error;
+    }
+    throw new AskResultError("Could not open the child Claude session", {
+      cause: error,
+    });
+  }
+}
+
 export function buildAskResultMessage(options: {
   operationId: string;
+  target: AskTarget;
   question: string;
   answer: string;
   agentName: string;
@@ -453,7 +665,7 @@ export function buildAskResultMessage(options: {
 
   const baseDetails = {
     operationId: options.operationId,
-    target: "pi" as const,
+    target: options.target,
     agentName: options.agentName,
     paneId: options.paneId,
     childSession: options.childSession,
@@ -473,12 +685,22 @@ export function buildAskResultMessage(options: {
 
 export interface AsyncAskCoordinatorDependencies {
   createHerdr(): HerdrClient;
-  extractAnswer(sessionPath: string): string;
+  extractAnswer(target: AskTarget, childSession: string, cwd?: string): string;
+  resultRetryTimeoutMs?: number;
+  resultRetryIntervalMs?: number;
 }
 
 const DEFAULT_ASYNC_ASK_DEPENDENCIES: AsyncAskCoordinatorDependencies = {
   createHerdr: () => new HerdrClient(),
-  extractAnswer: extractPiSessionAnswer,
+  extractAnswer: (target, childSession, cwd) => {
+    if (target === "pi") {
+      return extractPiSessionAnswer(childSession);
+    }
+    if (cwd === undefined) {
+      throw new AskResultError("Claude ask operation did not preserve its cwd");
+    }
+    return extractClaudeSessionAnswer(childSession, cwd);
+  },
 };
 
 export class AsyncAskCoordinator {
@@ -614,6 +836,7 @@ export class AsyncAskCoordinator {
       const launch =
         recovered?.launch ??
         resolveSettledAskAgent(
+          operation.target,
           operation,
           await herdr.promptAndWait(
             operation.agentName,
@@ -621,30 +844,31 @@ export class AsyncAskCoordinator {
             timeoutMs,
           ),
         );
-      childSession = launch.sessionPath;
+      childSession = launch.childSession;
       const answer =
         recovered?.answer ??
-        this.dependencies.extractAnswer(launch.sessionPath);
+        (await this.extractAnswer(operation, launch.childSession));
       const result = buildAskResultMessage({
         operationId: operation.operationId,
+        target: operation.target,
         question: operation.question,
         answer,
         agentName: operation.agentName,
         paneId: launch.paneId,
-        childSession: launch.sessionPath,
+        childSession: launch.childSession,
         originSession: operation.originSession,
       });
       terminal = {
         ...operation,
         status: "completed",
         paneId: launch.paneId,
-        childSession: launch.sessionPath,
+        childSession: launch.childSession,
         result: { content: result.content, details: { ...result.details } },
         updatedAt: Date.now(),
       };
     } catch (error) {
-      if (error instanceof AskLaunchError && error.sessionPath !== undefined) {
-        childSession = error.sessionPath;
+      if (error instanceof AskLaunchError && error.childSession !== undefined) {
+        childSession = error.childSession;
       }
       const failure = classifyAsyncAskFailure(error);
       const failedOperation = {
@@ -689,18 +913,22 @@ export class AsyncAskCoordinator {
           operation.agentName,
           remaining,
         );
-        const launch = resolveSettledAskAgent(operation, settled);
+        const launch = resolveSettledAskAgent(
+          operation.target,
+          operation,
+          settled,
+        );
         return {
           launch,
-          answer: this.dependencies.extractAnswer(launch.sessionPath),
+          answer: await this.extractAnswer(operation, launch.childSession),
         };
       }
 
-      const launch = resolveSettledAskAgent(operation, agent);
+      const launch = resolveSettledAskAgent(operation.target, operation, agent);
       try {
         return {
           launch,
-          answer: this.dependencies.extractAnswer(launch.sessionPath),
+          answer: await this.extractAnswer(operation, launch.childSession),
         };
       } catch (error) {
         if (agent.status === "done" || !(error instanceof AskResultError)) {
@@ -724,6 +952,22 @@ export class AsyncAskCoordinator {
         }
       }
     }
+  }
+
+  private async extractAnswer(
+    operation: AsyncAskOperation,
+    childSession: string,
+  ): Promise<string> {
+    return retryAskResultExtraction(
+      () =>
+        this.dependencies.extractAnswer(
+          operation.target,
+          childSession,
+          operation.cwd,
+        ),
+      this.dependencies.resultRetryTimeoutMs ?? ASK_RESULT_RETRY_TIMEOUT_MS,
+      this.dependencies.resultRetryIntervalMs ?? ASK_RESULT_RETRY_INTERVAL_MS,
+    );
   }
 
   private deliver(
@@ -790,6 +1034,24 @@ export class AsyncAskCoordinator {
   }
 }
 
+async function retryAskResultExtraction(
+  extract: () => string,
+  timeoutMs: number,
+  intervalMs: number,
+): Promise<string> {
+  const deadline = Date.now() + timeoutMs;
+  while (true) {
+    try {
+      return extract();
+    } catch (error) {
+      if (!(error instanceof AskResultError) || Date.now() >= deadline) {
+        throw error;
+      }
+    }
+    await new Promise((resolve) => setTimeout(resolve, intervalMs));
+  }
+}
+
 function remainingAskTime(operation: AsyncAskOperation): number {
   const remaining = operation.deadlineAt - Date.now();
   if (remaining <= 0) {
@@ -851,7 +1113,7 @@ function buildAsyncAskFailureResult(
     ].join("\n"),
     details: {
       operationId: operation.operationId,
-      target: "pi",
+      target: operation.target,
       agentName: operation.agentName,
       paneId: operation.paneId,
       status: "failed",
@@ -883,10 +1145,6 @@ async function handleAsk(
     return;
   }
 
-  if (args.target === "claude") {
-    ctx.ui.notify("Claude ask is not implemented yet", "warning");
-    return;
-  }
   const originSession = ctx.sessionManager.getSessionFile();
   if (!args.wait && originSession === undefined) {
     ctx.ui.notify(
@@ -950,21 +1208,26 @@ async function handleAsk(
     }
     ctx.ui.setStatus("portr-ask", `Dispatching ${agentName}`);
     try {
-      const destination = await startPiAskDestination(herdr, {
+      const destinationOptions = {
         originPaneId,
         cwd: ctx.cwd,
         agentName,
         ...(args.model === undefined ? {} : { model: args.model }),
-      });
+      };
+      const destination =
+        args.target === "pi"
+          ? await startPiAskDestination(herdr, destinationOptions)
+          : await startClaudeAskDestination(herdr, destinationOptions);
       const now = Date.now();
       const operation: AsyncAskOperation = {
         version: ASYNC_ASK_STATE_VERSION,
         kind: "ask",
         operationId,
-        target: "pi",
+        target: args.target,
         status: "working",
         originSession,
         question: args.question,
+        ...(args.target === "claude" ? { cwd: ctx.cwd } : {}),
         agentName: destination.agentName,
         paneId: destination.paneId,
         createdAt: now,
@@ -988,13 +1251,17 @@ async function handleAsk(
   ctx.ui.setStatus("portr-ask", `Waiting for ${agentName}`);
   let launch: AskLaunchResult;
   try {
-    launch = await launchPiAsk(herdr, {
+    const launchOptions = {
       originPaneId,
       cwd: ctx.cwd,
       agentName,
       prompt,
       ...(args.model === undefined ? {} : { model: args.model }),
-    });
+    };
+    launch =
+      args.target === "pi"
+        ? await launchPiAsk(herdr, launchOptions)
+        : await launchClaudeAsk(herdr, launchOptions);
   } catch (error) {
     ctx.ui.notify(errorMessage(error), "error");
     return;
@@ -1004,10 +1271,17 @@ async function handleAsk(
 
   let answer: string;
   try {
-    answer = extractPiSessionAnswer(launch.sessionPath);
+    answer = await retryAskResultExtraction(
+      () =>
+        launch.target === "pi"
+          ? extractPiSessionAnswer(launch.childSession)
+          : extractClaudeSessionAnswer(launch.childSession, ctx.cwd),
+      ASK_RESULT_RETRY_TIMEOUT_MS,
+      ASK_RESULT_RETRY_INTERVAL_MS,
+    );
   } catch (error) {
     ctx.ui.notify(
-      `Ask result unavailable; destination references: pane ${launch.paneId}, agent name ${launch.agentName}, child session ${launch.sessionPath}: ${errorMessage(error)}`,
+      `Ask result unavailable; destination references: pane ${launch.paneId}, agent name ${launch.agentName}, child session ${launch.childSession}: ${errorMessage(error)}`,
       "error",
     );
     return;
@@ -1015,11 +1289,12 @@ async function handleAsk(
 
   const result = buildAskResultMessage({
     operationId,
+    target: args.target,
     question: args.question,
     answer,
     agentName: launch.agentName,
     paneId: launch.paneId,
-    childSession: launch.sessionPath,
+    childSession: launch.childSession,
     ...(originSession === undefined ? {} : { originSession }),
   });
   pi.sendMessage({

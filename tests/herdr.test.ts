@@ -62,6 +62,35 @@ test("HerdrClient requires a managed Herdr environment", async () => {
   await assert.rejects(() => client.currentPane(), /Herdr-managed pane/);
 });
 
+test("HerdrClient promptUntilWorking confirms prompt acceptance once", async () => {
+  let args: string[] | undefined;
+  const runner: HerdrCommandRunner = async (invocation) => {
+    args = invocation.args;
+    return jsonOutput({
+      agent: { agent_status: "working", pane_id: "w1:p2" },
+    });
+  };
+  const client = new HerdrClient(runner, { HERDR_ENV: "1" });
+
+  assert.deepEqual(
+    await client.promptUntilWorking("worker", "approved prompt", 12_345),
+    { status: "working", paneId: "w1:p2" },
+  );
+  assert.deepEqual(args, [
+    "agent",
+    "prompt",
+    "worker",
+    "approved prompt",
+    "--wait",
+    "--until",
+    "working",
+    "--until",
+    "blocked",
+    "--timeout",
+    "12345",
+  ]);
+});
+
 test("HerdrClient promptAndWait parses lifecycle and Pi session data", async () => {
   let commandTimeout: number | undefined;
   const runner: HerdrCommandRunner = async (_invocation, timeoutMs) => {
@@ -95,6 +124,28 @@ test("HerdrClient promptAndWait parses lifecycle and Pi session data", async () 
     () => client.promptAndWait("worker", "question", 0),
     RangeError,
   );
+});
+
+test("HerdrClient preserves a Claude session ID", async () => {
+  const runner: HerdrCommandRunner = async () =>
+    jsonOutput({
+      agent: {
+        agent_status: "idle",
+        pane_id: "w1:p2",
+        agent_session: {
+          agent: "claude",
+          kind: "id",
+          value: "12345678-1234-1234-1234-123456789abc",
+        },
+      },
+    });
+  const client = new HerdrClient(runner, { HERDR_ENV: "1" });
+
+  assert.deepEqual(await client.getAgent("worker"), {
+    status: "idle",
+    paneId: "w1:p2",
+    sessionId: "12345678-1234-1234-1234-123456789abc",
+  });
 });
 
 test("HerdrClient waitForAgent waits without resubmitting a prompt", async () => {

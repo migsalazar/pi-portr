@@ -38,10 +38,11 @@ export interface AsyncAskOperation {
   version: typeof ASYNC_ASK_STATE_VERSION;
   kind: "ask";
   operationId: string;
-  target: "pi";
+  target: "pi" | "claude";
   status: OperationStatus;
   originSession: string;
   question: string;
+  cwd?: string;
   agentName: string;
   paneId: string;
   createdAt: number;
@@ -135,11 +136,13 @@ export function isAsyncAskOperation(
   if (
     value.version !== ASYNC_ASK_STATE_VERSION ||
     value.kind !== "ask" ||
-    value.target !== "pi" ||
+    (value.target !== "pi" && value.target !== "claude") ||
     !isOperationStatus(value.status) ||
     !isNonEmptyString(value.operationId) ||
     !isNonEmptyString(value.originSession) ||
     typeof value.question !== "string" ||
+    (value.cwd !== undefined && !isNonEmptyString(value.cwd)) ||
+    (value.target === "claude" && !isNonEmptyString(value.cwd)) ||
     !isNonEmptyString(value.agentName) ||
     !isNonEmptyString(value.paneId) ||
     !isFiniteTimestamp(value.createdAt) ||

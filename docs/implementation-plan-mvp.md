@@ -385,7 +385,7 @@ Make ask asynchronous by default:
 
 Keep `--wait` as the blocking variant.
 
-### Slice 4 — Claude destination (next)
+### Slice 4 — Claude destination (complete)
 
 Add Claude-specific launch and result behavior:
 
@@ -455,7 +455,7 @@ For every operation, report which stage failed and any safe references already c
 ### Pass
 
 ```text
-/portr-pass pi <goal>
+/portr-pass <pi|claude> <goal>
 ```
 
 opens a visible, independent Pi session containing the exact handoff approved in the editor. The destination is usable immediately and the origin remains intact.
@@ -481,4 +481,4 @@ returns after dispatch, leaves the origin usable, runs Claude under the document
 
 ## 15. Next implementation action
 
-Implement Slice 4 without weakening the verified Pi behavior: add Claude-specific pass launch and prompting first, validate its visible destination and failure references, then add blocking and asynchronous Claude ask using the established operation lifecycle.
+Perform an MVP release-readiness review: audit the package surface and documentation, add opt-in integration-test automation for the verified Herdr flows, and resolve any remaining acceptance-criteria gaps without expanding scope.

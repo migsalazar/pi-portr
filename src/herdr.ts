@@ -47,6 +47,7 @@ export interface HerdrAgent {
   status: HerdrAgentStatus;
   paneId: string;
   sessionPath?: string;
+  sessionId?: string;
 }
 
 export interface HerdrCommandErrorOptions extends ErrorOptions {
@@ -116,66 +117,44 @@ export class HerdrClient {
     paneId: string,
     piArgs: readonly string[],
   ): Promise<void> {
-    const args = [
-      "agent",
-      "start",
-      agentName,
-      "--kind",
-      "pi",
-      "--pane",
-      paneId,
-      "--timeout",
-      String(AGENT_START_TIMEOUT_MS),
-    ];
+    await this.startAgent("pi", agentName, paneId, piArgs);
+  }
 
-    if (piArgs.length > 0) {
-      args.push("--", ...piArgs);
-    }
-
-    const terminalId = await this.paneTerminalId(paneId);
-    const retryDeadline = Date.now() + AGENT_START_BUSY_RETRY_TIMEOUT_MS;
-
-    while (true) {
-      try {
-        await this.execute(args, AGENT_START_TIMEOUT_MS + 5_000);
-        return;
-      } catch (error) {
-        if (
-          !(error instanceof HerdrCommandError) ||
-          error.code !== "agent_pane_busy" ||
-          Date.now() >= retryDeadline
-        ) {
-          throw error;
-        }
-
-        let terminalUnchanged: boolean;
-        try {
-          terminalUnchanged =
-            (await this.paneTerminalId(paneId)) === terminalId;
-        } catch {
-          throw error;
-        }
-        if (!terminalUnchanged) {
-          throw error;
-        }
-
-        let shellInitializing: boolean;
-        try {
-          shellInitializing = await this.paneShellIsInitializing(paneId);
-        } catch {
-          throw error;
-        }
-        if (!shellInitializing) {
-          throw error;
-        }
-
-        await delay(AGENT_START_BUSY_POLL_INTERVAL_MS);
-      }
-    }
+  async startClaude(
+    agentName: string,
+    paneId: string,
+    claudeArgs: readonly string[],
+  ): Promise<void> {
+    await this.startAgent("claude", agentName, paneId, claudeArgs);
   }
 
   async prompt(agentName: string, prompt: string): Promise<void> {
     await this.execute(["agent", "prompt", agentName, prompt]);
+  }
+
+  async promptUntilWorking(
+    agentName: string,
+    prompt: string,
+    timeoutMs = DEFAULT_COMMAND_TIMEOUT_MS,
+  ): Promise<HerdrAgent> {
+    validateTimeout(timeoutMs);
+    const result = await this.execute(
+      [
+        "agent",
+        "prompt",
+        agentName,
+        prompt,
+        "--wait",
+        "--until",
+        "working",
+        "--until",
+        "blocked",
+        "--timeout",
+        String(timeoutMs),
+      ],
+      timeoutMs + 5_000,
+    );
+    return readAgent(result, "agent prompt");
   }
 
   async promptAndWait(
@@ -232,6 +211,70 @@ export class HerdrClient {
 
   async focus(agentName: string): Promise<void> {
     await this.execute(["agent", "focus", agentName]);
+  }
+
+  private async startAgent(
+    kind: "pi" | "claude",
+    agentName: string,
+    paneId: string,
+    agentArgs: readonly string[],
+  ): Promise<void> {
+    const args = [
+      "agent",
+      "start",
+      agentName,
+      "--kind",
+      kind,
+      "--pane",
+      paneId,
+      "--timeout",
+      String(AGENT_START_TIMEOUT_MS),
+    ];
+
+    if (agentArgs.length > 0) {
+      args.push("--", ...agentArgs);
+    }
+
+    const terminalId = await this.paneTerminalId(paneId);
+    const retryDeadline = Date.now() + AGENT_START_BUSY_RETRY_TIMEOUT_MS;
+
+    while (true) {
+      try {
+        await this.execute(args, AGENT_START_TIMEOUT_MS + 5_000);
+        return;
+      } catch (error) {
+        if (
+          !(error instanceof HerdrCommandError) ||
+          error.code !== "agent_pane_busy" ||
+          Date.now() >= retryDeadline
+        ) {
+          throw error;
+        }
+
+        let terminalUnchanged: boolean;
+        try {
+          terminalUnchanged =
+            (await this.paneTerminalId(paneId)) === terminalId;
+        } catch {
+          throw error;
+        }
+        if (!terminalUnchanged) {
+          throw error;
+        }
+
+        let shellInitializing: boolean;
+        try {
+          shellInitializing = await this.paneShellIsInitializing(paneId);
+        } catch {
+          throw error;
+        }
+        if (!shellInitializing) {
+          throw error;
+        }
+
+        await delay(AGENT_START_BUSY_POLL_INTERVAL_MS);
+      }
+    }
   }
 
   private async paneTerminalId(paneId: string): Promise<string> {
@@ -407,18 +450,32 @@ function readAgent(result: unknown, operation: string): HerdrAgent {
   }
 
   const session = result.agent.agent_session;
+  const sessionRecord = isRecord(session) ? session : undefined;
+  const sessionValue =
+    sessionRecord !== undefined &&
+    typeof sessionRecord.value === "string" &&
+    sessionRecord.value.length > 0
+      ? sessionRecord.value
+      : undefined;
   const sessionPath =
-    isRecord(session) &&
-    session.agent === "pi" &&
-    session.kind === "path" &&
-    typeof session.value === "string" &&
-    session.value.length > 0
-      ? session.value
+    sessionValue !== undefined &&
+    sessionRecord?.agent === "pi" &&
+    sessionRecord.kind === "path"
+      ? sessionValue
+      : undefined;
+  const sessionId =
+    sessionValue !== undefined &&
+    sessionRecord?.agent === "claude" &&
+    sessionRecord.kind === "id"
+      ? sessionValue
       : undefined;
 
-  return sessionPath === undefined
-    ? { status, paneId }
-    : { status, paneId, sessionPath };
+  return {
+    status,
+    paneId,
+    ...(sessionPath === undefined ? {} : { sessionPath }),
+    ...(sessionId === undefined ? {} : { sessionId }),
+  };
 }
 
 function validateTimeout(timeoutMs: number): void {

@@ -12,7 +12,9 @@ import {
   AsyncAskCoordinator,
   buildAskPrompt,
   buildAskResultMessage,
+  extractClaudeTranscriptAnswer,
   extractFinalAssistantAnswer,
+  launchClaudeAsk,
   launchPiAsk,
   MAX_RETURN_ANSWER_CHARACTERS,
   parseAskArguments,
@@ -122,7 +124,8 @@ test("launchPiAsk starts read-only Pi and waits without focusing", async () => {
   assert.deepEqual(result, {
     agentName: "portr-ask-test",
     paneId: "w1:p2",
-    sessionPath: "/tmp/child session.jsonl",
+    target: "pi",
+    childSession: "/tmp/child session.jsonl",
     status: "idle",
   });
   assert.deepEqual(
@@ -160,6 +163,107 @@ test("launchPiAsk starts read-only Pi and waits without focusing", async () => {
         "agent",
         "prompt",
         "portr-ask-test",
+        "Question\nwith another line",
+        "--wait",
+        "--until",
+        "idle",
+        "--until",
+        "done",
+        "--until",
+        "blocked",
+        "--timeout",
+        "12345",
+      ],
+    ],
+  );
+  assert.equal(
+    calls.some((call) => call.args[1] === "focus"),
+    false,
+  );
+});
+
+test("launchClaudeAsk starts read-only Claude and preserves its session ID", async () => {
+  const calls: HerdrInvocation[] = [];
+  const runner: HerdrCommandRunner = async (invocation) => {
+    calls.push(invocation);
+    if (invocation.args[1] === "split") {
+      return jsonOutput({ pane: { pane_id: "w1:p2" } });
+    }
+    if (invocation.args[1] === "get") {
+      return jsonOutput({ pane: { terminal_id: "term-2" } });
+    }
+    if (invocation.args[1] === "prompt") {
+      return jsonOutput({
+        agent: {
+          agent_status: "idle",
+          pane_id: "w1:p2",
+          agent_session: {
+            agent: "claude",
+            kind: "id",
+            value: "12345678-1234-1234-1234-123456789abc",
+          },
+        },
+      });
+    }
+    return jsonOutput({ ok: true });
+  };
+  const client = new HerdrClient(runner, { HERDR_ENV: "1" });
+
+  const result = await launchClaudeAsk(client, {
+    originPaneId: "w1:p1",
+    cwd: "/tmp/project with spaces",
+    agentName: "portr-ask-claude-test",
+    prompt: "Question\nwith another line",
+    timeoutMs: 12_345,
+    model: "sonnet",
+  });
+
+  assert.deepEqual(result, {
+    target: "claude",
+    agentName: "portr-ask-claude-test",
+    paneId: "w1:p2",
+    childSession: "12345678-1234-1234-1234-123456789abc",
+    status: "idle",
+  });
+  assert.deepEqual(
+    calls.map((call) => call.args),
+    [
+      [
+        "pane",
+        "split",
+        "--pane",
+        "w1:p1",
+        "--direction",
+        "right",
+        "--cwd",
+        "/tmp/project with spaces",
+        "--no-focus",
+      ],
+      ["pane", "get", "w1:p2"],
+      [
+        "agent",
+        "start",
+        "portr-ask-claude-test",
+        "--kind",
+        "claude",
+        "--pane",
+        "w1:p2",
+        "--timeout",
+        "30000",
+        "--",
+        "--tools",
+        "Read,Grep,Glob",
+        "--disallowedTools",
+        "mcp__*",
+        "--permission-mode",
+        "dontAsk",
+        "--model",
+        "sonnet",
+      ],
+      [
+        "agent",
+        "prompt",
+        "portr-ask-claude-test",
         "Question\nwith another line",
         "--wait",
         "--until",
@@ -217,7 +321,7 @@ test("launchPiAsk preserves references when the destination is blocked", async (
       assert.equal(error.stage, "prompt_wait");
       assert.equal(error.status, "blocked");
       assert.equal(error.paneId, "w1:p2");
-      assert.equal(error.sessionPath, "/tmp/blocked.jsonl");
+      assert.equal(error.childSession, "/tmp/blocked.jsonl");
       assert.match(error.message, /requires intervention/);
       return true;
     },
@@ -293,9 +397,104 @@ test("extractFinalAssistantAnswer rejects an incomplete final response", () => {
   );
 });
 
+test("extractClaudeTranscriptAnswer returns only completed main-chain text", () => {
+  const transcript = [
+    {
+      type: "assistant",
+      uuid: "thinking-record",
+      isSidechain: false,
+      message: {
+        id: "message-1",
+        role: "assistant",
+        stop_reason: "end_turn",
+        content: [{ type: "thinking", thinking: "hidden reasoning" }],
+      },
+    },
+    {
+      type: "assistant",
+      uuid: "final-record",
+      isSidechain: false,
+      message: {
+        id: "message-1",
+        role: "assistant",
+        stop_reason: "end_turn",
+        content: [
+          { type: "text", text: "Answer data:image/png;base64,AAABBB==" },
+        ],
+      },
+    },
+    {
+      type: "assistant",
+      uuid: "sidechain-record",
+      isSidechain: true,
+      message: {
+        id: "sidechain-message",
+        role: "assistant",
+        stop_reason: "end_turn",
+        content: [{ type: "text", text: "Subagent text" }],
+      },
+    },
+    {
+      type: "system",
+      subtype: "turn_duration",
+      parentUuid: "final-record",
+    },
+  ]
+    .map((record) => JSON.stringify(record))
+    .join("\n");
+
+  assert.equal(
+    extractClaudeTranscriptAnswer(transcript),
+    "Answer [base64 data omitted]",
+  );
+});
+
+test("extractClaudeTranscriptAnswer rejects incomplete or uncommitted output", () => {
+  const incomplete = [
+    {
+      type: "assistant",
+      uuid: "incomplete-record",
+      message: {
+        id: "message-1",
+        role: "assistant",
+        stop_reason: "tool_use",
+        content: [{ type: "text", text: "Still working" }],
+      },
+    },
+    {
+      type: "system",
+      subtype: "turn_duration",
+      parentUuid: "incomplete-record",
+    },
+  ]
+    .map((record) => JSON.stringify(record))
+    .join("\n");
+  const uncommitted = JSON.stringify({
+    type: "assistant",
+    uuid: "uncommitted-record",
+    message: {
+      id: "message-1",
+      role: "assistant",
+      stop_reason: "end_turn",
+      content: [{ type: "text", text: "Not durably complete" }],
+    },
+  });
+
+  assert.throws(() => extractClaudeTranscriptAnswer(incomplete), /incomplete/);
+  assert.throws(
+    () => extractClaudeTranscriptAnswer(uncommitted),
+    /completion marker/,
+  );
+  assert.throws(
+    () => extractClaudeTranscriptAnswer("{invalid"),
+    /invalid JSON/,
+  );
+});
+
 test("buildAskResultMessage labels bounded excerpts and preserves references", () => {
   const result = buildAskResultMessage({
     operationId: "operation-1",
+    target: "pi",
     question: "What changed?",
     answer: "x".repeat(MAX_RETURN_ANSWER_CHARACTERS + 10),
     agentName: "portr-ask-test",
@@ -354,6 +553,62 @@ test("AsyncAskCoordinator completes a fresh prompt and delivers a follow-up", as
     restoreAsyncAskOperations(entries).get(operation.operationId)?.status,
     "delivered",
   );
+});
+
+test("AsyncAskCoordinator completes a fresh Claude prompt with durable target context", async () => {
+  const entries: SessionEntry[] = [];
+  const sent: Array<{ message: unknown; options: unknown }> = [];
+  const calls: HerdrInvocation[] = [];
+  const extracted: unknown[][] = [];
+  let extractionCount = 0;
+  const runner: HerdrCommandRunner = async (invocation) => {
+    calls.push(invocation);
+    return claudeAgentOutput("idle");
+  };
+  const operation: AsyncAskOperation = {
+    ...workingOperation(),
+    target: "claude",
+    cwd: "/tmp/project",
+  };
+  const api = runtimeApi(entries, sent);
+  const ctx = runtimeContext(entries);
+  const coordinator = new AsyncAskCoordinator(api, {
+    createHerdr: () => new HerdrClient(runner, { HERDR_ENV: "1" }),
+    resultRetryTimeoutMs: 100,
+    resultRetryIntervalMs: 0,
+    extractAnswer: (...args) => {
+      extracted.push(args);
+      extractionCount += 1;
+      if (extractionCount === 1) {
+        throw new AskResultError("transcript not flushed yet");
+      }
+      return "Claude answer";
+    },
+  });
+  coordinator.reconcile(ctx);
+
+  coordinator.monitorFresh(operation, "Question prompt", ctx);
+  await waitFor(() => sent.length === 1);
+
+  assert.equal(calls[0]?.args[1], "prompt");
+  assert.deepEqual(extracted, [
+    ["claude", "12345678-1234-1234-1234-123456789abc", "/tmp/project"],
+    ["claude", "12345678-1234-1234-1234-123456789abc", "/tmp/project"],
+  ]);
+  const deliveredMessage = sent[0]?.message as {
+    details?: { target?: string; childSession?: string };
+  };
+  assert.equal(deliveredMessage.details?.target, "claude");
+  assert.equal(
+    deliveredMessage.details?.childSession,
+    "12345678-1234-1234-1234-123456789abc",
+  );
+  const restored = restoreAsyncAskOperations(entries).get(
+    operation.operationId,
+  );
+  assert.equal(restored?.status, "completed");
+  assert.equal(restored?.target, "claude");
+  assert.equal(restored?.cwd, "/tmp/project");
 });
 
 test("AsyncAskCoordinator recovers without resubmitting or duplicating", async () => {
@@ -428,6 +683,7 @@ test("AsyncAskCoordinator waits through a recovered pre-prompt idle state", asyn
   };
   const coordinator = new AsyncAskCoordinator(runtimeApi(entries, sent), {
     createHerdr: () => new HerdrClient(runner, { HERDR_ENV: "1" }),
+    resultRetryTimeoutMs: 0,
     extractAnswer: () => {
       extractionCount += 1;
       if (extractionCount === 1) {
@@ -544,6 +800,23 @@ function agentOutput(status: "idle" | "working"): {
         agent: "pi",
         kind: "path",
         value: "/tmp/child.jsonl",
+      },
+    },
+  });
+}
+
+function claudeAgentOutput(status: "idle" | "working"): {
+  stdout: string;
+  stderr: string;
+} {
+  return jsonOutput({
+    agent: {
+      agent_status: status,
+      pane_id: "w1:p2",
+      agent_session: {
+        agent: "claude",
+        kind: "id",
+        value: "12345678-1234-1234-1234-123456789abc",
       },
     },
   });

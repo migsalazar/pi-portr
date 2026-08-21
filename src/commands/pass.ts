@@ -4,6 +4,7 @@ import {
   type ExtensionAPI,
   type ExtensionCommandContext,
 } from "@earendil-works/pi-coding-agent";
+import { buildClaudeLaunchArgs } from "../claude-target.ts";
 import { buildTransferContext } from "../context.ts";
 import { HerdrClient } from "../herdr.ts";
 import { buildPiLaunchArgs } from "../pi-target.ts";
@@ -165,7 +166,7 @@ export async function launchPiPass(
     );
 
     stage = "prompt";
-    await herdr.prompt(options.agentName, options.prompt);
+    await promptPassDestination(herdr, options.agentName, options.prompt);
 
     stage = "focus";
     await herdr.focus(options.agentName);
@@ -173,6 +174,65 @@ export async function launchPiPass(
     return { agentName: options.agentName, paneId };
   } catch (error) {
     throw new PassLaunchError(stage, options.agentName, paneId, error);
+  }
+}
+
+export async function launchClaudePass(
+  herdr: HerdrClient,
+  options: {
+    originPaneId: string;
+    cwd: string;
+    agentName: string;
+    prompt: string;
+    model?: string;
+  },
+): Promise<PassLaunchResult> {
+  let stage: PassLaunchStage = "split";
+  let paneId: string | undefined;
+
+  try {
+    const pane = await herdr.splitPane({
+      paneId: options.originPaneId,
+      cwd: options.cwd,
+      direction: "right",
+    });
+    paneId = pane.paneId;
+
+    stage = "start";
+    await herdr.startClaude(
+      options.agentName,
+      paneId,
+      buildClaudeLaunchArgs({
+        readOnly: false,
+        ...(options.model === undefined ? {} : { model: options.model }),
+      }),
+    );
+
+    stage = "prompt";
+    await promptPassDestination(herdr, options.agentName, options.prompt);
+
+    stage = "focus";
+    await herdr.focus(options.agentName);
+
+    return { agentName: options.agentName, paneId };
+  } catch (error) {
+    throw new PassLaunchError(stage, options.agentName, paneId, error);
+  }
+}
+
+async function promptPassDestination(
+  herdr: HerdrClient,
+  agentName: string,
+  prompt: string,
+): Promise<void> {
+  const agent = await herdr.promptUntilWorking(agentName, prompt);
+  if (agent.status === "blocked") {
+    throw new Error("destination is blocked and requires intervention");
+  }
+  if (agent.status !== "working") {
+    throw new Error(
+      `destination did not acknowledge the prompt (status ${agent.status})`,
+    );
   }
 }
 
@@ -193,10 +253,6 @@ async function handlePass(
     return;
   }
 
-  if (args.target === "claude") {
-    ctx.ui.notify("Claude pass is not implemented yet", "warning");
-    return;
-  }
   if (ctx.model === undefined) {
     ctx.ui.notify("No model selected for handoff generation", "error");
     return;
@@ -255,13 +311,17 @@ async function handlePass(
 
   const agentName = `portr-pass-${randomUUID().slice(0, 8)}`;
   try {
-    const result = await launchPiPass(herdr, {
+    const launchOptions = {
       originPaneId,
       cwd: ctx.cwd,
       agentName,
       prompt: approvedPrompt,
       ...(args.model === undefined ? {} : { model: args.model }),
-    });
+    };
+    const result =
+      args.target === "pi"
+        ? await launchPiPass(herdr, launchOptions)
+        : await launchClaudePass(herdr, launchOptions);
     ctx.ui.notify(
       `Handoff delivered to ${result.agentName} (${result.paneId})`,
       "info",

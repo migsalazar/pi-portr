@@ -31,6 +31,20 @@ test("restoreAsyncAskOperations keeps the latest valid branch snapshot", () => {
   assert.deepEqual(restored.get("operation-1"), completed);
 });
 
+test("restoreAsyncAskOperations preserves Claude cwd and rejects missing cwd", () => {
+  const claude = operation({ target: "claude", cwd: "/tmp/project" });
+  const withoutCwd = operation({ target: "claude" });
+  const entries: SessionEntry[] = [
+    customEntry("valid", claude),
+    customEntry("invalid", withoutCwd),
+  ];
+
+  assert.deepEqual(
+    restoreAsyncAskOperations(entries).get("operation-1"),
+    claude,
+  );
+});
+
 test("hasAskResultMessage matches durable delivery by operation ID", () => {
   const entries: SessionEntry[] = [
     {
