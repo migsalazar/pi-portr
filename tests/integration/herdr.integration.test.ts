@@ -42,14 +42,15 @@ test("live Herdr destination acknowledges one prompt and yields a durable answer
   const flow = readChoice("PORTR_INTEGRATION_FLOW", ["pass", "ask"] as const);
   const timeoutMs = readTimeout();
   const model = readOptionalEnvironment("PORTR_INTEGRATION_MODEL");
+  const scenario = readChoiceWithDefault(
+    "PORTR_INTEGRATION_SCENARIO",
+    ["marker", "short", "long", "tools"] as const,
+    "marker",
+  );
   const operationId = randomUUID();
   const marker = `PORTR_INTEGRATION_${operationId.replaceAll("-", "_")}`;
   const agentName = `portr-integration-${operationId.slice(0, 8)}`;
-  const prompt = [
-    "This is an automated pi-portr integration check.",
-    "Do not modify files or call tools.",
-    `Reply with ${marker} exactly once and no other text.`,
-  ].join("\n");
+  const prompt = buildPrompt(scenario, marker);
   const cwd = process.cwd();
   const herdr = new HerdrClient();
   const originPaneId = await herdr.currentPane();
@@ -76,6 +77,7 @@ test("live Herdr destination acknowledges one prompt and yields a durable answer
 
   context.diagnostic(`target: ${target}`);
   context.diagnostic(`flow: ${flow}`);
+  context.diagnostic(`scenario: ${scenario}`);
   context.diagnostic(`agent: ${agentName}`);
   context.diagnostic(`pane: ${destination.paneId}`);
   context.diagnostic(`session: ${destination.childSession}`);
@@ -167,6 +169,56 @@ function readChoice<const T extends readonly string[]>(
   assert.ok(value, `${name} is required`);
   assert.ok(allowed.includes(value), `${name} must be ${allowed.join(" or ")}`);
   return value as T[number];
+}
+
+function readChoiceWithDefault<const T extends readonly string[]>(
+  name: string,
+  allowed: T,
+  defaultValue: T[number],
+): T[number] {
+  const value = process.env[name];
+  if (value === undefined || value.trim().length === 0) {
+    return defaultValue;
+  }
+  assert.ok(allowed.includes(value), `${name} must be ${allowed.join(" or ")}`);
+  return value as T[number];
+}
+
+function buildPrompt(
+  scenario: "marker" | "short" | "long" | "tools",
+  marker: string,
+): string {
+  if (scenario === "short") {
+    return [
+      "This is an automated pi-portr integration check.",
+      "Do not modify files or call tools.",
+      `Reply with one short sentence containing ${marker} exactly once.`,
+    ].join("\n");
+  }
+
+  if (scenario === "long") {
+    return [
+      "This is an automated pi-portr integration check.",
+      "Do not modify files or call tools.",
+      "Write 120 numbered lines of plain text about durable transcript extraction.",
+      `Include ${marker} exactly once, on the final line only.`,
+    ].join("\n");
+  }
+
+  if (scenario === "tools") {
+    return [
+      "This is an automated pi-portr integration check.",
+      "Do not modify files.",
+      "Use read-only file inspection to read package.json in the current directory.",
+      `Reply with the package name and ${marker} exactly once.`,
+    ].join("\n");
+  }
+
+  return [
+    "This is an automated pi-portr integration check.",
+    "Do not modify files or call tools.",
+    `Reply with ${marker} exactly once and no other text.`,
+  ].join("\n");
 }
 
 function readOptionalEnvironment(name: string): string | undefined {

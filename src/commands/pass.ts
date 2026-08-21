@@ -5,7 +5,7 @@ import {
   type ExtensionCommandContext,
 } from "@earendil-works/pi-coding-agent";
 import { buildClaudeLaunchArgs } from "../claude-target.ts";
-import { buildTransferContext } from "../context.ts";
+import { buildTransferContext, quoteReferenceBlock } from "../context.ts";
 import { HerdrClient } from "../herdr.ts";
 import { buildPiLaunchArgs } from "../pi-target.ts";
 
@@ -345,7 +345,7 @@ async function generateHandoff(
                   text: [
                     "## Quoted origin context",
                     "",
-                    conversation,
+                    quoteReferenceBlock(conversation),
                     "",
                     "## Requested continuation",
                     "",
