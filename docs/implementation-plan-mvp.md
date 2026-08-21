@@ -372,7 +372,7 @@ Implement the complete ask pipeline using `--wait`:
 
 This slice validates the transport and result contract before background lifecycle complexity is introduced.
 
-### Slice 3 — Pi-to-Pi asynchronous ask (next)
+### Slice 3 — Pi-to-Pi asynchronous ask (complete)
 
 Make ask asynchronous by default:
 
@@ -385,7 +385,7 @@ Make ask asynchronous by default:
 
 Keep `--wait` as the blocking variant.
 
-### Slice 4 — Claude destination
+### Slice 4 — Claude destination (next)
 
 Add Claude-specific launch and result behavior:
 
@@ -419,7 +419,13 @@ Do not generalize target or backend interfaces unless the Pi and Claude implemen
 - blocked status;
 - partial launch failure.
 
-Add command/state tests when those modules contain enough pure logic to justify separate files.
+`tests/state.test.ts` covers:
+
+- versioned operation restoration from the active branch;
+- malformed snapshot rejection;
+- durable result-message detection;
+- follow-up delivery options;
+- idempotent recovery when delivery was already persisted.
 
 ### Integration tests
 
@@ -475,4 +481,4 @@ returns after dispatch, leaves the origin usable, runs Claude under the document
 
 ## 15. Next implementation action
 
-Implement Slice 3 without changing the verified blocking behavior: persist asynchronous ask operations, monitor completion, deliver bounded results exactly once to the matching origin session, and reconcile unfinished operations after reload or restart.
+Implement Slice 4 without weakening the verified Pi behavior: add Claude-specific pass launch and prompting first, validate its visible destination and failure references, then add blocking and asynchronous Claude ask using the established operation lifecycle.

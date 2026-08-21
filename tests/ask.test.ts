@@ -1,9 +1,15 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import type {
+  ExtensionAPI,
+  ExtensionContext,
+  SessionEntry,
+} from "@earendil-works/pi-coding-agent";
 import {
   AskLaunchError,
   AskResultError,
   AskUsageError,
+  AsyncAskCoordinator,
   buildAskPrompt,
   buildAskResultMessage,
   extractFinalAssistantAnswer,
@@ -16,6 +22,11 @@ import {
   type HerdrCommandRunner,
   type HerdrInvocation,
 } from "../src/herdr.ts";
+import {
+  ASYNC_ASK_OPERATION_ENTRY,
+  type AsyncAskOperation,
+  restoreAsyncAskOperations,
+} from "../src/state.ts";
 
 test("parseAskArguments parses blocking Pi options", () => {
   assert.deepEqual(
@@ -303,6 +314,250 @@ test("buildAskResultMessage labels bounded excerpts and preserves references", (
   assert.equal(result.details.paneId, "w1:p2");
   assert.equal(result.details.childSession, "/tmp/child.jsonl");
 });
+
+test("AsyncAskCoordinator completes a fresh prompt and delivers a follow-up", async () => {
+  const entries: SessionEntry[] = [];
+  const sent: Array<{ message: unknown; options: unknown }> = [];
+  const calls: HerdrInvocation[] = [];
+  const runner: HerdrCommandRunner = async (invocation) => {
+    calls.push(invocation);
+    return agentOutput("idle");
+  };
+  const operation = workingOperation();
+  const api = runtimeApi(entries, sent);
+  const ctx = runtimeContext(entries);
+  const coordinator = new AsyncAskCoordinator(api, {
+    createHerdr: () => new HerdrClient(runner, { HERDR_ENV: "1" }),
+    extractAnswer: () => "Recovered answer",
+  });
+  coordinator.reconcile(ctx);
+
+  coordinator.monitorFresh(operation, "Question prompt", ctx);
+  await waitFor(() => sent.length === 1);
+
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0]?.args[1], "prompt");
+  assert.equal(calls[0]?.args[3], "Question prompt");
+  assert.deepEqual(sent[0]?.options, {
+    deliverAs: "followUp",
+    triggerTurn: true,
+  });
+  assert.equal(
+    restoreAsyncAskOperations(entries).get(operation.operationId)?.status,
+    "completed",
+  );
+
+  coordinator.reconcile(ctx);
+  assert.equal(sent.length, 1);
+  coordinator.acknowledgePersistedResults(ctx);
+  assert.equal(
+    restoreAsyncAskOperations(entries).get(operation.operationId)?.status,
+    "delivered",
+  );
+});
+
+test("AsyncAskCoordinator recovers without resubmitting or duplicating", async () => {
+  const operation = workingOperation();
+  const entries: SessionEntry[] = [operationEntry("working", operation)];
+  const sent: Array<{ message: unknown; options: unknown }> = [];
+  const calls: HerdrInvocation[] = [];
+  const runner: HerdrCommandRunner = async (invocation) => {
+    calls.push(invocation);
+    return agentOutput("idle");
+  };
+  const api = runtimeApi(entries, sent);
+  const ctx = runtimeContext(entries);
+  const dependencies = {
+    createHerdr: () => new HerdrClient(runner, { HERDR_ENV: "1" }),
+    extractAnswer: () => "Recovered answer",
+  };
+
+  new AsyncAskCoordinator(api, dependencies).reconcile(ctx);
+  await waitFor(() => sent.length === 1);
+
+  assert.equal(
+    calls.some((call) => call.args[1] === "prompt"),
+    false,
+  );
+  assert.equal(calls[0]?.args[1], "get");
+
+  new AsyncAskCoordinator(api, dependencies).reconcile(ctx);
+  await new Promise((resolve) => setTimeout(resolve, 10));
+  assert.equal(sent.length, 1);
+});
+
+test("AsyncAskCoordinator recovers completed output after its deadline", async () => {
+  const operation = {
+    ...workingOperation(),
+    deadlineAt: Date.now() - 1,
+  };
+  const entries: SessionEntry[] = [operationEntry("working", operation)];
+  const sent: Array<{ message: unknown; options: unknown }> = [];
+  const runner: HerdrCommandRunner = async () => agentOutput("idle");
+  const coordinator = new AsyncAskCoordinator(runtimeApi(entries, sent), {
+    createHerdr: () => new HerdrClient(runner, { HERDR_ENV: "1" }),
+    extractAnswer: () => "Already completed answer",
+  });
+  const ctx = runtimeContext(entries);
+
+  coordinator.reconcile(ctx);
+  await waitFor(() => sent.length === 1);
+  coordinator.acknowledgePersistedResults(ctx);
+
+  assert.equal(
+    restoreAsyncAskOperations(entries).get(operation.operationId)?.outcome,
+    "completed",
+  );
+});
+
+test("AsyncAskCoordinator waits through a recovered pre-prompt idle state", async () => {
+  const operation = workingOperation();
+  const entries: SessionEntry[] = [operationEntry("working", operation)];
+  const sent: Array<{ message: unknown; options: unknown }> = [];
+  const calls: HerdrInvocation[] = [];
+  let getCount = 0;
+  let extractionCount = 0;
+  const runner: HerdrCommandRunner = async (invocation) => {
+    calls.push(invocation);
+    if (invocation.args[1] === "get") {
+      getCount += 1;
+      return agentOutput(getCount === 1 ? "idle" : "working");
+    }
+    const waitsForWorking = invocation.args.includes("working");
+    return agentOutput(waitsForWorking ? "working" : "idle");
+  };
+  const coordinator = new AsyncAskCoordinator(runtimeApi(entries, sent), {
+    createHerdr: () => new HerdrClient(runner, { HERDR_ENV: "1" }),
+    extractAnswer: () => {
+      extractionCount += 1;
+      if (extractionCount === 1) {
+        throw new AskResultError("answer not persisted yet");
+      }
+      return "Recovered answer";
+    },
+  });
+
+  coordinator.reconcile(runtimeContext(entries));
+  await waitFor(() => sent.length === 1);
+
+  assert.deepEqual(
+    calls.map((call) => call.args[1]),
+    ["get", "wait", "get", "wait"],
+  );
+  assert.equal(
+    calls.some((call) => call.args[1] === "prompt"),
+    false,
+  );
+});
+
+function workingOperation(): AsyncAskOperation {
+  const now = Date.now();
+  return {
+    version: 1,
+    kind: "ask",
+    operationId: "operation-async",
+    target: "pi",
+    status: "working",
+    originSession: "/tmp/origin.jsonl",
+    question: "What changed?",
+    agentName: "portr-ask-test",
+    paneId: "w1:p2",
+    createdAt: now,
+    updatedAt: now,
+    deadlineAt: now + 60_000,
+  };
+}
+
+function runtimeApi(
+  entries: SessionEntry[],
+  sent: Array<{ message: unknown; options: unknown }>,
+): ExtensionAPI {
+  let entryIndex = entries.length;
+  return {
+    appendEntry: (customType: string, data?: unknown) => {
+      entryIndex += 1;
+      entries.push({
+        type: "custom",
+        id: `entry-${entryIndex}`,
+        parentId: null,
+        timestamp: new Date().toISOString(),
+        customType,
+        data,
+      });
+    },
+    sendMessage: (message: unknown, options?: unknown) => {
+      sent.push({ message, options });
+      const result = message as {
+        customType: string;
+        content: string;
+        display: boolean;
+        details?: unknown;
+      };
+      entryIndex += 1;
+      entries.push({
+        type: "custom_message",
+        id: `entry-${entryIndex}`,
+        parentId: null,
+        timestamp: new Date().toISOString(),
+        customType: result.customType,
+        content: result.content,
+        display: result.display,
+        details: result.details,
+      });
+    },
+  } as unknown as ExtensionAPI;
+}
+
+function runtimeContext(entries: SessionEntry[]): ExtensionContext {
+  return {
+    sessionManager: {
+      getSessionFile: () => "/tmp/origin.jsonl",
+      getBranch: () => entries,
+    },
+    ui: { notify: () => undefined },
+  } as unknown as ExtensionContext;
+}
+
+function operationEntry(
+  id: string,
+  operation: AsyncAskOperation,
+): SessionEntry {
+  return {
+    type: "custom",
+    id,
+    parentId: null,
+    timestamp: new Date().toISOString(),
+    customType: ASYNC_ASK_OPERATION_ENTRY,
+    data: operation,
+  };
+}
+
+function agentOutput(status: "idle" | "working"): {
+  stdout: string;
+  stderr: string;
+} {
+  return jsonOutput({
+    agent: {
+      agent_status: status,
+      pane_id: "w1:p2",
+      agent_session: {
+        agent: "pi",
+        kind: "path",
+        value: "/tmp/child.jsonl",
+      },
+    },
+  });
+}
+
+async function waitFor(predicate: () => boolean): Promise<void> {
+  for (let attempt = 0; attempt < 100; attempt += 1) {
+    if (predicate()) {
+      return;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 1));
+  }
+  throw new Error("Timed out waiting for async ask test condition");
+}
 
 function jsonOutput(result: unknown): { stdout: string; stderr: string } {
   return {

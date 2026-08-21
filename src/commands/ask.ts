@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import {
   type ExtensionAPI,
   type ExtensionCommandContext,
+  type ExtensionContext,
   SessionManager,
 } from "@earendil-works/pi-coding-agent";
 import {
@@ -13,10 +14,23 @@ import {
   type HerdrAgent,
   type HerdrAgentStatus,
   HerdrClient,
+  HerdrCommandError,
 } from "../herdr.ts";
 import { buildPiLaunchArgs } from "../pi-target.ts";
+import {
+  ASYNC_ASK_OPERATION_ENTRY,
+  ASYNC_ASK_RESULT_MESSAGE,
+  ASYNC_ASK_STATE_VERSION,
+  type AskOperationFailure,
+  type AsyncAskOperation,
+  deliverTerminalAskOperation,
+  type FailureReason,
+  restoreAsyncAskOperations,
+  type StoredAskResult,
+} from "../state.ts";
 
 const ASK_WAIT_TIMEOUT_MS = 300_000;
+const ASK_RECOVERY_ACTIVITY_WAIT_MS = 5_000;
 const MAX_QUESTION_CHARACTERS = 20_000;
 const MAX_ASK_PROMPT_CHARACTERS = 90_000;
 export const MAX_RETURN_ANSWER_CHARACTERS = 40_000;
@@ -112,10 +126,25 @@ export class AskResultError extends Error {
 }
 
 export function registerAskCommand(pi: ExtensionAPI): void {
+  const asyncAsks = new AsyncAskCoordinator(pi);
+
+  pi.on("session_start", (_event, ctx) => {
+    asyncAsks.reconcile(ctx);
+  });
+  pi.on("session_tree", (_event, ctx) => {
+    asyncAsks.reconcile(ctx);
+  });
+  pi.on("session_shutdown", () => {
+    asyncAsks.stop();
+  });
+  pi.on("agent_settled", (_event, ctx) => {
+    asyncAsks.acknowledgePersistedResults(ctx);
+  });
+
   pi.registerCommand("portr-ask", {
     description: "Ask a question in another visible agent session",
     handler: async (args, ctx) => {
-      await handleAsk(pi, args, ctx);
+      await handleAsk(pi, asyncAsks, args, ctx);
     },
   });
 }
@@ -220,17 +249,20 @@ export function buildAskPrompt(context: string, question: string): string {
   ].join("\n");
 }
 
-export async function launchPiAsk(
+export interface AskDestination {
+  agentName: string;
+  paneId: string;
+}
+
+export async function startPiAskDestination(
   herdr: HerdrClient,
   options: {
     originPaneId: string;
     cwd: string;
     agentName: string;
-    prompt: string;
-    timeoutMs?: number;
     model?: string;
   },
-): Promise<AskLaunchResult> {
+): Promise<AskDestination> {
   let stage: AskLaunchStage = "split";
   let paneId: string | undefined;
 
@@ -251,54 +283,86 @@ export async function launchPiAsk(
         ...(options.model === undefined ? {} : { model: options.model }),
       }),
     );
-
-    stage = "prompt_wait";
-    const agent = await herdr.promptAndWait(
-      options.agentName,
-      options.prompt,
-      options.timeoutMs ?? ASK_WAIT_TIMEOUT_MS,
-    );
-
-    if (agent.status === "blocked") {
-      throw new AskLaunchError(
-        stage,
-        options.agentName,
-        paneId,
-        new Error("destination is blocked and requires intervention"),
-        agent,
-      );
-    }
-    if (agent.status !== "idle" && agent.status !== "done") {
-      throw new AskLaunchError(
-        stage,
-        options.agentName,
-        paneId,
-        new Error(`destination settled with ambiguous status ${agent.status}`),
-        agent,
-      );
-    }
-    if (agent.sessionPath === undefined) {
-      throw new AskLaunchError(
-        stage,
-        options.agentName,
-        paneId,
-        new Error("Herdr did not provide the child Pi session path"),
-        agent,
-      );
-    }
-
-    return {
-      agentName: options.agentName,
-      paneId: agent.paneId,
-      sessionPath: agent.sessionPath,
-      status: agent.status,
-    };
+    return { agentName: options.agentName, paneId };
   } catch (error) {
     if (error instanceof AskLaunchError) {
       throw error;
     }
     throw new AskLaunchError(stage, options.agentName, paneId, error);
   }
+}
+
+export async function launchPiAsk(
+  herdr: HerdrClient,
+  options: {
+    originPaneId: string;
+    cwd: string;
+    agentName: string;
+    prompt: string;
+    timeoutMs?: number;
+    model?: string;
+  },
+): Promise<AskLaunchResult> {
+  const destination = await startPiAskDestination(herdr, options);
+
+  try {
+    const agent = await herdr.promptAndWait(
+      destination.agentName,
+      options.prompt,
+      options.timeoutMs ?? ASK_WAIT_TIMEOUT_MS,
+    );
+    return resolveSettledAskAgent(destination, agent);
+  } catch (error) {
+    if (error instanceof AskLaunchError) {
+      throw error;
+    }
+    throw new AskLaunchError(
+      "prompt_wait",
+      destination.agentName,
+      destination.paneId,
+      error,
+    );
+  }
+}
+
+function resolveSettledAskAgent(
+  destination: AskDestination,
+  agent: HerdrAgent,
+): AskLaunchResult {
+  if (agent.status === "blocked") {
+    throw new AskLaunchError(
+      "prompt_wait",
+      destination.agentName,
+      destination.paneId,
+      new Error("destination is blocked and requires intervention"),
+      agent,
+    );
+  }
+  if (agent.status !== "idle" && agent.status !== "done") {
+    throw new AskLaunchError(
+      "prompt_wait",
+      destination.agentName,
+      destination.paneId,
+      new Error(`destination settled with ambiguous status ${agent.status}`),
+      agent,
+    );
+  }
+  if (agent.sessionPath === undefined) {
+    throw new AskLaunchError(
+      "prompt_wait",
+      destination.agentName,
+      destination.paneId,
+      new Error("Herdr did not provide the child Pi session path"),
+      agent,
+    );
+  }
+
+  return {
+    agentName: destination.agentName,
+    paneId: agent.paneId,
+    sessionPath: agent.sessionPath,
+    status: agent.status,
+  };
 }
 
 export function extractFinalAssistantAnswer(
@@ -407,8 +471,402 @@ export function buildAskResultMessage(options: {
   };
 }
 
+export interface AsyncAskCoordinatorDependencies {
+  createHerdr(): HerdrClient;
+  extractAnswer(sessionPath: string): string;
+}
+
+const DEFAULT_ASYNC_ASK_DEPENDENCIES: AsyncAskCoordinatorDependencies = {
+  createHerdr: () => new HerdrClient(),
+  extractAnswer: extractPiSessionAnswer,
+};
+
+export class AsyncAskCoordinator {
+  private generation = 0;
+  private readonly active = new Set<string>();
+  private readonly deliveryPending = new Set<string>();
+  private originSession: string | undefined;
+  private readonly pi: ExtensionAPI;
+  private readonly dependencies: AsyncAskCoordinatorDependencies;
+
+  constructor(
+    pi: ExtensionAPI,
+    dependencies: AsyncAskCoordinatorDependencies = DEFAULT_ASYNC_ASK_DEPENDENCIES,
+  ) {
+    this.pi = pi;
+    this.dependencies = dependencies;
+  }
+
+  reconcile(ctx: ExtensionContext): void {
+    const generation = ++this.generation;
+    this.active.clear();
+    const originSession = ctx.sessionManager.getSessionFile();
+    if (originSession !== this.originSession) {
+      this.deliveryPending.clear();
+      this.originSession = originSession;
+    }
+    if (originSession === undefined) {
+      return;
+    }
+
+    const entries = ctx.sessionManager.getBranch();
+    const operations = restoreAsyncAskOperations(entries);
+    for (const operation of operations.values()) {
+      if (operation.originSession !== originSession) {
+        continue;
+      }
+      if (operation.status === "working") {
+        this.monitor(operation, ctx, generation);
+      } else if (
+        operation.status === "completed" ||
+        operation.status === "failed"
+      ) {
+        this.deliver(operation, ctx, generation);
+      }
+    }
+  }
+
+  stop(): void {
+    this.generation += 1;
+    this.active.clear();
+    this.deliveryPending.clear();
+    this.originSession = undefined;
+  }
+
+  acknowledgePersistedResults(ctx: ExtensionContext): void {
+    for (const entry of ctx.sessionManager.getBranch()) {
+      if (
+        entry.type === "custom_message" &&
+        entry.customType === ASYNC_ASK_RESULT_MESSAGE &&
+        isRecord(entry.details) &&
+        typeof entry.details.operationId === "string"
+      ) {
+        this.acknowledgeResult(entry.details.operationId, ctx);
+      }
+    }
+  }
+
+  acknowledgeResult(operationId: string, ctx: ExtensionContext): void {
+    const operation = restoreAsyncAskOperations(
+      ctx.sessionManager.getBranch(),
+    ).get(operationId);
+    if (
+      operation === undefined ||
+      (operation.status !== "completed" && operation.status !== "failed")
+    ) {
+      return;
+    }
+    this.deliveryPending.delete(operationId);
+    this.deliver(operation, ctx, this.generation);
+  }
+
+  monitorFresh(
+    operation: AsyncAskOperation,
+    prompt: string,
+    ctx: ExtensionContext,
+  ): void {
+    this.monitor(operation, ctx, this.generation, prompt);
+  }
+
+  private monitor(
+    operation: AsyncAskOperation,
+    ctx: ExtensionContext,
+    generation: number,
+    prompt?: string,
+  ): void {
+    if (this.active.has(operation.operationId)) {
+      return;
+    }
+    this.active.add(operation.operationId);
+
+    void this.runMonitor(operation, ctx, generation, prompt).finally(() => {
+      if (generation === this.generation) {
+        this.active.delete(operation.operationId);
+      }
+    });
+  }
+
+  private async runMonitor(
+    operation: AsyncAskOperation,
+    ctx: ExtensionContext,
+    generation: number,
+    prompt?: string,
+  ): Promise<void> {
+    let terminal: AsyncAskOperation;
+    let childSession: string | undefined;
+
+    try {
+      const timeoutMs = operation.deadlineAt - Date.now();
+      if (prompt !== undefined && timeoutMs <= 0) {
+        throw new HerdrCommandError(
+          "agent wait",
+          "consultation deadline elapsed",
+          "",
+          { code: "timeout" },
+        );
+      }
+
+      const herdr = this.dependencies.createHerdr();
+      const recovered =
+        prompt === undefined
+          ? await this.recoverAsk(operation, herdr)
+          : undefined;
+      const launch =
+        recovered?.launch ??
+        resolveSettledAskAgent(
+          operation,
+          await herdr.promptAndWait(
+            operation.agentName,
+            prompt ?? "",
+            timeoutMs,
+          ),
+        );
+      childSession = launch.sessionPath;
+      const answer =
+        recovered?.answer ??
+        this.dependencies.extractAnswer(launch.sessionPath);
+      const result = buildAskResultMessage({
+        operationId: operation.operationId,
+        question: operation.question,
+        answer,
+        agentName: operation.agentName,
+        paneId: launch.paneId,
+        childSession: launch.sessionPath,
+        originSession: operation.originSession,
+      });
+      terminal = {
+        ...operation,
+        status: "completed",
+        paneId: launch.paneId,
+        childSession: launch.sessionPath,
+        result: { content: result.content, details: { ...result.details } },
+        updatedAt: Date.now(),
+      };
+    } catch (error) {
+      if (error instanceof AskLaunchError && error.sessionPath !== undefined) {
+        childSession = error.sessionPath;
+      }
+      const failure = classifyAsyncAskFailure(error);
+      const failedOperation = {
+        ...operation,
+        status: "failed" as const,
+        updatedAt: Date.now(),
+        failure,
+        ...(childSession === undefined ? {} : { childSession }),
+      };
+      terminal = {
+        ...failedOperation,
+        result: buildAsyncAskFailureResult(failedOperation, failure),
+      };
+    }
+
+    if (!this.isCurrent(operation, ctx, generation)) {
+      return;
+    }
+
+    try {
+      this.persist(terminal);
+      this.deliver(terminal, ctx, generation);
+    } catch (error) {
+      if (this.isCurrent(operation, ctx, generation)) {
+        ctx.ui.notify(
+          `Could not persist or deliver async ask ${operation.operationId}: ${errorMessage(error)}`,
+          "error",
+        );
+      }
+    }
+  }
+
+  private async recoverAsk(
+    operation: AsyncAskOperation,
+    herdr: HerdrClient,
+  ): Promise<{ launch: AskLaunchResult; answer: string }> {
+    while (true) {
+      const agent = await herdr.getAgent(operation.agentName);
+      if (agent.status === "working") {
+        const remaining = remainingAskTime(operation);
+        const settled = await herdr.waitForAgent(
+          operation.agentName,
+          remaining,
+        );
+        const launch = resolveSettledAskAgent(operation, settled);
+        return {
+          launch,
+          answer: this.dependencies.extractAnswer(launch.sessionPath),
+        };
+      }
+
+      const launch = resolveSettledAskAgent(operation, agent);
+      try {
+        return {
+          launch,
+          answer: this.dependencies.extractAnswer(launch.sessionPath),
+        };
+      } catch (error) {
+        if (agent.status === "done" || !(error instanceof AskResultError)) {
+          throw error;
+        }
+      }
+
+      const activityWait = Math.min(
+        ASK_RECOVERY_ACTIVITY_WAIT_MS,
+        remainingAskTime(operation),
+      );
+      try {
+        await herdr.waitForAgent(operation.agentName, activityWait, [
+          "working",
+          "done",
+          "blocked",
+        ]);
+      } catch (error) {
+        if (!(error instanceof HerdrCommandError) || error.code !== "timeout") {
+          throw error;
+        }
+      }
+    }
+  }
+
+  private deliver(
+    operation: AsyncAskOperation,
+    ctx: ExtensionContext,
+    generation: number,
+  ): void {
+    if (
+      !this.isCurrent(operation, ctx, generation) ||
+      this.deliveryPending.has(operation.operationId)
+    ) {
+      return;
+    }
+
+    const outcome = deliverTerminalAskOperation(
+      operation,
+      ctx.sessionManager.getBranch(),
+      {
+        send: (result, options) => {
+          this.pi.sendMessage(
+            {
+              customType: ASYNC_ASK_RESULT_MESSAGE,
+              content: result.content,
+              display: true,
+              details: result.details,
+            },
+            options,
+          );
+        },
+        persist: (delivered) => {
+          this.persist(delivered);
+        },
+      },
+    );
+
+    if (outcome === "sent") {
+      this.deliveryPending.add(operation.operationId);
+    } else if (outcome === "already_present") {
+      this.deliveryPending.delete(operation.operationId);
+    }
+
+    if (outcome === "sent") {
+      const verb = operation.status === "completed" ? "completed" : "failed";
+      ctx.ui.notify(
+        `Consultation ${verb} in ${operation.agentName} (${operation.paneId})`,
+        operation.status === "completed" ? "info" : "error",
+      );
+    }
+  }
+
+  private persist(operation: AsyncAskOperation): void {
+    this.pi.appendEntry(ASYNC_ASK_OPERATION_ENTRY, operation);
+  }
+
+  private isCurrent(
+    operation: AsyncAskOperation,
+    ctx: ExtensionContext,
+    generation: number,
+  ): boolean {
+    return (
+      generation === this.generation &&
+      ctx.sessionManager.getSessionFile() === operation.originSession
+    );
+  }
+}
+
+function remainingAskTime(operation: AsyncAskOperation): number {
+  const remaining = operation.deadlineAt - Date.now();
+  if (remaining <= 0) {
+    throw new HerdrCommandError(
+      "agent wait",
+      "consultation deadline elapsed during recovery",
+      "",
+      { code: "timeout" },
+    );
+  }
+  return remaining;
+}
+
+function classifyAsyncAskFailure(error: unknown): AskOperationFailure {
+  let reason: FailureReason = "prompt_failed";
+  if (error instanceof HerdrCommandError && error.code === "timeout") {
+    reason = "timeout";
+  } else if (error instanceof AskLaunchError && error.status === "blocked") {
+    reason = "blocked";
+  } else if (
+    error instanceof AskLaunchError &&
+    error.status !== undefined &&
+    error.status !== "idle" &&
+    error.status !== "done"
+  ) {
+    reason = "ambiguous_status";
+  } else if (error instanceof AskResultError) {
+    reason = "result_unavailable";
+  }
+  return { reason, message: errorMessage(error) };
+}
+
+function buildAsyncAskFailureResult(
+  operation: AsyncAskOperation,
+  failure: AskOperationFailure,
+): StoredAskResult {
+  const boundedQuestion = boundText(
+    sanitizeTransferText(operation.question),
+    QUESTION_EXCERPT_CHARACTERS,
+  );
+  const questionSuffix = boundedQuestion.truncated ? "…" : "";
+  const references = [
+    `pane ${operation.paneId}`,
+    `agent name ${operation.agentName}`,
+    operation.childSession === undefined
+      ? undefined
+      : `child session ${operation.childSession}`,
+  ]
+    .filter((value) => value !== undefined)
+    .join(", ");
+
+  return {
+    content: [
+      "# Portr consultation failed",
+      "",
+      `Question: ${boundedQuestion.text}${questionSuffix}`,
+      `Destination references: ${references}`,
+      `Failure: ${failure.message}`,
+    ].join("\n"),
+    details: {
+      operationId: operation.operationId,
+      target: "pi",
+      agentName: operation.agentName,
+      paneId: operation.paneId,
+      status: "failed",
+      failureReason: failure.reason,
+      originSession: operation.originSession,
+      ...(operation.childSession === undefined
+        ? {}
+        : { childSession: operation.childSession }),
+    },
+  };
+}
+
 async function handleAsk(
   pi: ExtensionAPI,
+  asyncAsks: AsyncAskCoordinator,
   rawArguments: string,
   ctx: ExtensionCommandContext,
 ): Promise<void> {
@@ -429,10 +887,11 @@ async function handleAsk(
     ctx.ui.notify("Claude ask is not implemented yet", "warning");
     return;
   }
-  if (!args.wait) {
+  const originSession = ctx.sessionManager.getSessionFile();
+  if (!args.wait && originSession === undefined) {
     ctx.ui.notify(
-      "Asynchronous ask is not implemented yet; use --wait for the blocking form",
-      "warning",
+      "Asynchronous ask requires a persisted origin session; use --wait for an in-memory session",
+      "error",
     );
     return;
   }
@@ -480,8 +939,53 @@ async function handleAsk(
 
   const operationId = randomUUID();
   const agentName = `portr-ask-${operationId.slice(0, 8)}`;
-  ctx.ui.setStatus("portr-ask", `Waiting for ${agentName}`);
 
+  if (!args.wait) {
+    if (originSession === undefined) {
+      ctx.ui.notify(
+        "Asynchronous ask requires a persisted origin session",
+        "error",
+      );
+      return;
+    }
+    ctx.ui.setStatus("portr-ask", `Dispatching ${agentName}`);
+    try {
+      const destination = await startPiAskDestination(herdr, {
+        originPaneId,
+        cwd: ctx.cwd,
+        agentName,
+        ...(args.model === undefined ? {} : { model: args.model }),
+      });
+      const now = Date.now();
+      const operation: AsyncAskOperation = {
+        version: ASYNC_ASK_STATE_VERSION,
+        kind: "ask",
+        operationId,
+        target: "pi",
+        status: "working",
+        originSession,
+        question: args.question,
+        agentName: destination.agentName,
+        paneId: destination.paneId,
+        createdAt: now,
+        updatedAt: now,
+        deadlineAt: now + ASK_WAIT_TIMEOUT_MS,
+      };
+      pi.appendEntry(ASYNC_ASK_OPERATION_ENTRY, operation);
+      asyncAsks.monitorFresh(operation, prompt, ctx);
+      ctx.ui.notify(
+        `Consultation dispatched to ${destination.agentName} (${destination.paneId})`,
+        "info",
+      );
+    } catch (error) {
+      ctx.ui.notify(errorMessage(error), "error");
+    } finally {
+      ctx.ui.setStatus("portr-ask", undefined);
+    }
+    return;
+  }
+
+  ctx.ui.setStatus("portr-ask", `Waiting for ${agentName}`);
   let launch: AskLaunchResult;
   try {
     launch = await launchPiAsk(herdr, {
@@ -509,7 +1013,6 @@ async function handleAsk(
     return;
   }
 
-  const originSession = ctx.sessionManager.getSessionFile();
   const result = buildAskResultMessage({
     operationId,
     question: args.question,
@@ -520,7 +1023,7 @@ async function handleAsk(
     ...(originSession === undefined ? {} : { originSession }),
   });
   pi.sendMessage({
-    customType: "portr-ask-result",
+    customType: ASYNC_ASK_RESULT_MESSAGE,
     content: result.content,
     display: true,
     details: result.details,

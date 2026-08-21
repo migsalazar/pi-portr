@@ -97,6 +97,90 @@ test("HerdrClient promptAndWait parses lifecycle and Pi session data", async () 
   );
 });
 
+test("HerdrClient waitForAgent waits without resubmitting a prompt", async () => {
+  let args: string[] | undefined;
+  let commandTimeout: number | undefined;
+  const runner: HerdrCommandRunner = async (invocation, timeoutMs) => {
+    args = invocation.args;
+    commandTimeout = timeoutMs;
+    return jsonOutput({
+      agent: {
+        agent_status: "idle",
+        pane_id: "w1:p2",
+        agent_session: {
+          agent: "pi",
+          kind: "path",
+          value: "/tmp/child.jsonl",
+        },
+      },
+    });
+  };
+  const client = new HerdrClient(runner, { HERDR_ENV: "1" });
+
+  assert.deepEqual(await client.waitForAgent("worker", 12_345), {
+    status: "idle",
+    paneId: "w1:p2",
+    sessionPath: "/tmp/child.jsonl",
+  });
+  assert.deepEqual(args, [
+    "agent",
+    "wait",
+    "worker",
+    "--until",
+    "idle",
+    "--until",
+    "done",
+    "--until",
+    "blocked",
+    "--timeout",
+    "12345",
+  ]);
+  assert.equal(commandTimeout, 17_345);
+
+  await client.waitForAgent("worker", 1_000, ["working", "blocked"]);
+  assert.deepEqual(args, [
+    "agent",
+    "wait",
+    "worker",
+    "--until",
+    "working",
+    "--until",
+    "blocked",
+    "--timeout",
+    "1000",
+  ]);
+  await assert.rejects(
+    () => client.waitForAgent("worker", 1_000, []),
+    RangeError,
+  );
+});
+
+test("HerdrClient getAgent reads the current durable session reference", async () => {
+  let args: string[] | undefined;
+  const runner: HerdrCommandRunner = async (invocation) => {
+    args = invocation.args;
+    return jsonOutput({
+      agent: {
+        agent_status: "working",
+        pane_id: "w1:p2",
+        agent_session: {
+          agent: "pi",
+          kind: "path",
+          value: "/tmp/child.jsonl",
+        },
+      },
+    });
+  };
+  const client = new HerdrClient(runner, { HERDR_ENV: "1" });
+
+  assert.deepEqual(await client.getAgent("worker"), {
+    status: "working",
+    paneId: "w1:p2",
+    sessionPath: "/tmp/child.jsonl",
+  });
+  assert.deepEqual(args, ["agent", "get", "worker"]);
+});
+
 test("HerdrClient parses current and split pane IDs", async () => {
   const calls: string[][] = [];
   const runner: HerdrCommandRunner = async (invocation) => {

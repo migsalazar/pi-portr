@@ -205,6 +205,31 @@ export class HerdrClient {
     return readAgent(result, "agent prompt");
   }
 
+  async getAgent(agentName: string): Promise<HerdrAgent> {
+    const result = await this.execute(["agent", "get", agentName]);
+    return readAgent(result, "agent get");
+  }
+
+  async waitForAgent(
+    agentName: string,
+    timeoutMs: number,
+    until: readonly HerdrAgentStatus[] = ["idle", "done", "blocked"],
+  ): Promise<HerdrAgent> {
+    validateTimeout(timeoutMs);
+    if (until.length === 0) {
+      throw new RangeError("until must include at least one agent status");
+    }
+
+    const args = ["agent", "wait", agentName];
+    for (const status of until) {
+      args.push("--until", status);
+    }
+    args.push("--timeout", String(timeoutMs));
+
+    const result = await this.execute(args, timeoutMs + 5_000);
+    return readAgent(result, "agent wait");
+  }
+
   async focus(agentName: string): Promise<void> {
     await this.execute(["agent", "focus", agentName]);
   }

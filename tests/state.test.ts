@@ -1,0 +1,149 @@
+import assert from "node:assert/strict";
+import test from "node:test";
+import type { SessionEntry } from "@earendil-works/pi-coding-agent";
+import {
+  ASYNC_ASK_OPERATION_ENTRY,
+  ASYNC_ASK_RESULT_MESSAGE,
+  type AskDeliveryPort,
+  type AsyncAskOperation,
+  deliverTerminalAskOperation,
+  hasAskResultMessage,
+  restoreAsyncAskOperations,
+} from "../src/state.ts";
+
+test("restoreAsyncAskOperations keeps the latest valid branch snapshot", () => {
+  const working = operation({ status: "working", updatedAt: 10 });
+  const completed = operation({
+    status: "completed",
+    updatedAt: 20,
+    childSession: "/tmp/child.jsonl",
+    result: storedResult(),
+  });
+  const entries: SessionEntry[] = [
+    customEntry("one", working),
+    customEntry("invalid", { ...working, deadlineAt: "later" }),
+    customEntry("two", completed),
+  ];
+
+  const restored = restoreAsyncAskOperations(entries);
+
+  assert.equal(restored.size, 1);
+  assert.deepEqual(restored.get("operation-1"), completed);
+});
+
+test("hasAskResultMessage matches durable delivery by operation ID", () => {
+  const entries: SessionEntry[] = [
+    {
+      type: "custom_message",
+      id: "result",
+      parentId: null,
+      timestamp: "2026-01-01T00:00:00.000Z",
+      customType: ASYNC_ASK_RESULT_MESSAGE,
+      content: "answer",
+      display: true,
+      details: { operationId: "operation-1" },
+    },
+  ];
+
+  assert.equal(hasAskResultMessage(entries, "operation-1"), true);
+  assert.equal(hasAskResultMessage(entries, "operation-2"), false);
+});
+
+test("deliverTerminalAskOperation sends a follow-up and awaits durable acknowledgment", () => {
+  const completed = operation({
+    status: "completed",
+    childSession: "/tmp/child.jsonl",
+    result: storedResult(),
+  });
+  const sent: unknown[] = [];
+  const persisted: AsyncAskOperation[] = [];
+  const port: AskDeliveryPort = {
+    send: (result, options) => sent.push({ result, options }),
+    persist: (snapshot) => persisted.push(snapshot),
+  };
+
+  const outcome = deliverTerminalAskOperation(completed, [], port, 123);
+
+  assert.equal(outcome, "sent");
+  assert.deepEqual(sent, [
+    {
+      result: storedResult(),
+      options: { deliverAs: "followUp", triggerTurn: true },
+    },
+  ]);
+  assert.equal(persisted.length, 0);
+});
+
+test("delivery reconciliation does not duplicate an existing result message", () => {
+  const completed = operation({
+    status: "completed",
+    childSession: "/tmp/child.jsonl",
+    result: storedResult(),
+  });
+  const entries: SessionEntry[] = [
+    {
+      type: "custom_message",
+      id: "result",
+      parentId: null,
+      timestamp: "2026-01-01T00:00:00.000Z",
+      customType: ASYNC_ASK_RESULT_MESSAGE,
+      content: "answer",
+      display: true,
+      details: { operationId: completed.operationId },
+    },
+  ];
+  let sendCount = 0;
+  const persisted: AsyncAskOperation[] = [];
+
+  const outcome = deliverTerminalAskOperation(completed, entries, {
+    send: () => {
+      sendCount += 1;
+    },
+    persist: (snapshot) => persisted.push(snapshot),
+  });
+
+  assert.equal(outcome, "already_present");
+  assert.equal(sendCount, 0);
+  assert.equal(persisted[0]?.status, "delivered");
+});
+
+function operation(
+  overrides: Partial<AsyncAskOperation> = {},
+): AsyncAskOperation {
+  return {
+    version: 1,
+    kind: "ask",
+    operationId: "operation-1",
+    target: "pi",
+    status: "working",
+    originSession: "/tmp/origin.jsonl",
+    question: "What changed?",
+    agentName: "portr-ask-test",
+    paneId: "w1:p2",
+    createdAt: 1,
+    updatedAt: 1,
+    deadlineAt: 1_000,
+    ...overrides,
+  };
+}
+
+function storedResult(): {
+  content: string;
+  details: Record<string, unknown>;
+} {
+  return {
+    content: "answer",
+    details: { operationId: "operation-1", status: "completed" },
+  };
+}
+
+function customEntry(id: string, data: unknown): SessionEntry {
+  return {
+    type: "custom",
+    id,
+    parentId: null,
+    timestamp: "2026-01-01T00:00:00.000Z",
+    customType: ASYNC_ASK_OPERATION_ENTRY,
+    data,
+  };
+}
