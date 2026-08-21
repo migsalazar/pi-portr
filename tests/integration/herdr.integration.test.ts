@@ -3,16 +3,19 @@ import { randomUUID } from "node:crypto";
 import test from "node:test";
 import {
   extractClaudeSessionAnswer,
-  extractPiSessionAnswer,
-  launchClaudeAsk,
-  launchPiAsk,
-} from "../../src/commands/ask.ts";
+  resolveClaudeSessionReference,
+} from "../../src/claude-target.ts";
+import { launchClaudeAsk, launchPiAsk } from "../../src/commands/ask.ts";
 import { launchClaudePass, launchPiPass } from "../../src/commands/pass.ts";
 import {
   type HerdrAgent,
   type HerdrAgentStatus,
   HerdrClient,
 } from "../../src/herdr.ts";
+import {
+  extractPiSessionAnswer,
+  resolvePiSessionReference,
+} from "../../src/pi-target.ts";
 
 type IntegrationTarget = "pi" | "claude";
 
@@ -129,7 +132,10 @@ function settledDestination(
   agent: HerdrAgent,
 ): SettledDestination {
   assertSettledStatus(agent.status);
-  const childSession = target === "pi" ? agent.sessionPath : agent.sessionId;
+  const childSession =
+    target === "pi"
+      ? resolvePiSessionReference(agent.session)
+      : resolveClaudeSessionReference(agent.session);
   assert.ok(childSession, `Herdr did not return a ${target} session reference`);
   return { paneId, childSession };
 }

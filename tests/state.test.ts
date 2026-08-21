@@ -2,12 +2,14 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import type { SessionEntry } from "@earendil-works/pi-coding-agent";
 import {
-  ASYNC_ASK_OPERATION_ENTRY,
-  ASYNC_ASK_RESULT_MESSAGE,
   type AskDeliveryPort,
-  type AsyncAskOperation,
   deliverTerminalAskOperation,
   hasAskResultMessage,
+} from "../src/async-ask.ts";
+import {
+  ASYNC_ASK_OPERATION_ENTRY,
+  ASYNC_ASK_RESULT_MESSAGE,
+  type AsyncAskOperation,
   restoreAsyncAskOperations,
 } from "../src/state.ts";
 

@@ -5,20 +5,28 @@ import type {
   ExtensionContext,
   SessionEntry,
 } from "@earendil-works/pi-coding-agent";
+import { AskResultError } from "../src/ask-result.ts";
 import {
   AskLaunchError,
-  AskResultError,
-  AskUsageError,
   AsyncAskCoordinator,
-  buildAskPrompt,
   buildAskResultMessage,
+  MAX_RETURN_ANSWER_CHARACTERS,
+} from "../src/async-ask.ts";
+import {
   extractClaudeTranscriptAnswer,
-  extractFinalAssistantAnswer,
+  resolveClaudeSessionReference,
+} from "../src/claude-target.ts";
+import {
+  AskUsageError,
+  buildAskPrompt,
   launchClaudeAsk,
   launchPiAsk,
-  MAX_RETURN_ANSWER_CHARACTERS,
   parseAskArguments,
 } from "../src/commands/ask.ts";
+import {
+  extractFinalPiAssistantAnswer as extractFinalAssistantAnswer,
+  resolvePiSessionReference,
+} from "../src/pi-target.ts";
 import {
   HerdrClient,
   type HerdrCommandRunner,
@@ -281,6 +289,27 @@ test("launchClaudeAsk starts read-only Claude and preserves its session ID", asy
     calls.some((call) => call.args[1] === "focus"),
     false,
   );
+});
+
+test("target session contracts reject the other harness reference", () => {
+  const piSession = {
+    agent: "pi" as const,
+    kind: "path" as const,
+    value: "/tmp/child.jsonl",
+  };
+  const claudeSession = {
+    agent: "claude" as const,
+    kind: "id" as const,
+    value: "12345678-1234-1234-1234-123456789abc",
+  };
+
+  assert.equal(resolvePiSessionReference(piSession), piSession.value);
+  assert.equal(resolvePiSessionReference(claudeSession), undefined);
+  assert.equal(
+    resolveClaudeSessionReference(claudeSession),
+    claudeSession.value,
+  );
+  assert.equal(resolveClaudeSessionReference(piSession), undefined);
 });
 
 test("launchPiAsk preserves references when the destination is blocked", async () => {
@@ -641,6 +670,121 @@ test("AsyncAskCoordinator recovers without resubmitting or duplicating", async (
   assert.equal(sent.length, 1);
 });
 
+test("AsyncAskCoordinator ignores operations from another origin", async () => {
+  const operation = {
+    ...workingOperation(),
+    originSession: "/tmp/other-origin.jsonl",
+  };
+  const entries: SessionEntry[] = [operationEntry("working", operation)];
+  const sent: Array<{ message: unknown; options: unknown }> = [];
+  const calls: HerdrInvocation[] = [];
+  const runner: HerdrCommandRunner = async (invocation) => {
+    calls.push(invocation);
+    return agentOutput("idle");
+  };
+  const coordinator = new AsyncAskCoordinator(runtimeApi(entries, sent), {
+    createHerdr: () => new HerdrClient(runner, { HERDR_ENV: "1" }),
+    extractAnswer: () => "Wrong-origin answer",
+  });
+
+  coordinator.reconcile(runtimeContext(entries));
+  await new Promise((resolve) => setTimeout(resolve, 10));
+
+  assert.equal(calls.length, 0);
+  assert.equal(sent.length, 0);
+  assert.equal(entries.length, 1);
+});
+
+test("AsyncAskCoordinator does not deliver after the origin changes in flight", async () => {
+  const entries: SessionEntry[] = [];
+  const sent: Array<{ message: unknown; options: unknown }> = [];
+  let currentOrigin = "/tmp/origin.jsonl";
+  let settle:
+    | ((output: { stdout: string; stderr: string }) => void)
+    | undefined;
+  const runner: HerdrCommandRunner = () =>
+    new Promise((resolve) => {
+      settle = resolve;
+    });
+  const coordinator = new AsyncAskCoordinator(runtimeApi(entries, sent), {
+    createHerdr: () => new HerdrClient(runner, { HERDR_ENV: "1" }),
+    extractAnswer: () => "Must stay with the original session",
+  });
+  const ctx = runtimeContext(entries, () => currentOrigin);
+  const operation = workingOperation();
+  coordinator.reconcile(ctx);
+
+  coordinator.monitorFresh(operation, "Question prompt", ctx);
+  await waitFor(() => settle !== undefined);
+  currentOrigin = "/tmp/different-origin.jsonl";
+  settle?.(agentOutput("idle"));
+  await new Promise((resolve) => setTimeout(resolve, 10));
+
+  assert.equal(sent.length, 0);
+  assert.equal(entries.length, 0);
+});
+
+test("AsyncAskCoordinator persists an expired working recovery as a timeout", async () => {
+  const operation = {
+    ...workingOperation(),
+    deadlineAt: Date.now() - 1,
+  };
+  const entries: SessionEntry[] = [operationEntry("working", operation)];
+  const sent: Array<{ message: unknown; options: unknown }> = [];
+  const calls: HerdrInvocation[] = [];
+  const runner: HerdrCommandRunner = async (invocation) => {
+    calls.push(invocation);
+    return agentOutput("working");
+  };
+  const coordinator = new AsyncAskCoordinator(runtimeApi(entries, sent), {
+    createHerdr: () => new HerdrClient(runner, { HERDR_ENV: "1" }),
+    extractAnswer: () => "must not extract",
+  });
+
+  coordinator.reconcile(runtimeContext(entries));
+  await waitFor(() => sent.length === 1);
+
+  const restored = restoreAsyncAskOperations(entries).get(
+    operation.operationId,
+  );
+  assert.equal(restored?.status, "failed");
+  assert.equal(restored?.failure?.reason, "timeout");
+  assert.equal(restored?.childSession, "/tmp/child.jsonl");
+  assert.deepEqual(
+    calls.map((call) => call.args[1]),
+    ["get"],
+  );
+  const result = sent[0]?.message as { content?: string; details?: unknown };
+  assert.match(result.content ?? "", /pane w1:p2/);
+  assert.match(result.content ?? "", /agent name portr-ask-test/);
+  assert.match(result.content ?? "", /child session \/tmp\/child\.jsonl/);
+});
+
+test("AsyncAskCoordinator preserves destination references when recovery is blocked", async () => {
+  const operation = workingOperation();
+  const entries: SessionEntry[] = [operationEntry("working", operation)];
+  const sent: Array<{ message: unknown; options: unknown }> = [];
+  const runner: HerdrCommandRunner = async () => agentOutput("blocked");
+  const coordinator = new AsyncAskCoordinator(runtimeApi(entries, sent), {
+    createHerdr: () => new HerdrClient(runner, { HERDR_ENV: "1" }),
+    extractAnswer: () => "must not extract",
+  });
+
+  coordinator.reconcile(runtimeContext(entries));
+  await waitFor(() => sent.length === 1);
+
+  const restored = restoreAsyncAskOperations(entries).get(
+    operation.operationId,
+  );
+  assert.equal(restored?.status, "failed");
+  assert.equal(restored?.failure?.reason, "blocked");
+  assert.equal(restored?.paneId, "w1:p2");
+  assert.equal(restored?.agentName, "portr-ask-test");
+  assert.equal(restored?.childSession, "/tmp/child.jsonl");
+  const result = sent[0]?.message as { content?: string };
+  assert.match(result.content ?? "", /child session \/tmp\/child\.jsonl/);
+});
+
 test("AsyncAskCoordinator recovers completed output after its deadline", async () => {
   const operation = {
     ...workingOperation(),
@@ -764,10 +908,13 @@ function runtimeApi(
   } as unknown as ExtensionAPI;
 }
 
-function runtimeContext(entries: SessionEntry[]): ExtensionContext {
+function runtimeContext(
+  entries: SessionEntry[],
+  getSessionFile: () => string = () => "/tmp/origin.jsonl",
+): ExtensionContext {
   return {
     sessionManager: {
-      getSessionFile: () => "/tmp/origin.jsonl",
+      getSessionFile,
       getBranch: () => entries,
     },
     ui: { notify: () => undefined },
@@ -788,7 +935,7 @@ function operationEntry(
   };
 }
 
-function agentOutput(status: "idle" | "working"): {
+function agentOutput(status: "idle" | "working" | "blocked"): {
   stdout: string;
   stderr: string;
 } {

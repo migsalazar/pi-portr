@@ -54,16 +54,6 @@ export interface AsyncAskOperation {
   failure?: AskOperationFailure;
 }
 
-export interface AskDeliveryPort {
-  send(
-    result: StoredAskResult,
-    options: { deliverAs: "followUp"; triggerTurn: true },
-  ): void;
-  persist(operation: AsyncAskOperation): void;
-}
-
-export type AskDeliveryOutcome = "sent" | "already_present" | "ignored";
-
 export function restoreAsyncAskOperations(
   entries: readonly SessionEntry[],
 ): Map<string, AsyncAskOperation> {
@@ -79,52 +69,6 @@ export function restoreAsyncAskOperations(
     operations.set(entry.data.operationId, entry.data);
   }
   return operations;
-}
-
-export function hasAskResultMessage(
-  entries: readonly SessionEntry[],
-  operationId: string,
-): boolean {
-  return entries.some(
-    (entry) =>
-      entry.type === "custom_message" &&
-      entry.customType === ASYNC_ASK_RESULT_MESSAGE &&
-      isRecord(entry.details) &&
-      entry.details.operationId === operationId,
-  );
-}
-
-export function deliverTerminalAskOperation(
-  operation: AsyncAskOperation,
-  entries: readonly SessionEntry[],
-  port: AskDeliveryPort,
-  now = Date.now(),
-): AskDeliveryOutcome {
-  if (operation.status !== "completed" && operation.status !== "failed") {
-    return "ignored";
-  }
-
-  const alreadyPresent = hasAskResultMessage(entries, operation.operationId);
-  if (!alreadyPresent) {
-    if (operation.result === undefined) {
-      throw new Error(
-        `Terminal ask operation ${operation.operationId} has no stored result`,
-      );
-    }
-    port.send(operation.result, {
-      deliverAs: "followUp",
-      triggerTurn: true,
-    });
-    return "sent";
-  }
-
-  port.persist({
-    ...operation,
-    status: "delivered",
-    outcome: operation.status,
-    updatedAt: now,
-  });
-  return "already_present";
 }
 
 export function isAsyncAskOperation(

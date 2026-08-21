@@ -117,7 +117,7 @@ test("HerdrClient promptAndWait parses lifecycle and Pi session data", async () 
   assert.deepEqual(await client.promptAndWait("worker", "question", 12_345), {
     status: "done",
     paneId: "w1:p2",
-    sessionPath: "/tmp/child.jsonl",
+    session: { agent: "pi", kind: "path", value: "/tmp/child.jsonl" },
   });
   assert.equal(commandTimeout, 17_345);
   await assert.rejects(
@@ -144,7 +144,11 @@ test("HerdrClient preserves a Claude session ID", async () => {
   assert.deepEqual(await client.getAgent("worker"), {
     status: "idle",
     paneId: "w1:p2",
-    sessionId: "12345678-1234-1234-1234-123456789abc",
+    session: {
+      agent: "claude",
+      kind: "id",
+      value: "12345678-1234-1234-1234-123456789abc",
+    },
   });
 });
 
@@ -171,7 +175,7 @@ test("HerdrClient waitForAgent waits without resubmitting a prompt", async () =>
   assert.deepEqual(await client.waitForAgent("worker", 12_345), {
     status: "idle",
     paneId: "w1:p2",
-    sessionPath: "/tmp/child.jsonl",
+    session: { agent: "pi", kind: "path", value: "/tmp/child.jsonl" },
   });
   assert.deepEqual(args, [
     "agent",
@@ -227,7 +231,7 @@ test("HerdrClient getAgent reads the current durable session reference", async (
   assert.deepEqual(await client.getAgent("worker"), {
     status: "working",
     paneId: "w1:p2",
-    sessionPath: "/tmp/child.jsonl",
+    session: { agent: "pi", kind: "path", value: "/tmp/child.jsonl" },
   });
   assert.deepEqual(args, ["agent", "get", "worker"]);
 });

@@ -43,11 +43,14 @@ export const HERDR_AGENT_STATUSES = [
 
 export type HerdrAgentStatus = (typeof HERDR_AGENT_STATUSES)[number];
 
+export type HerdrAgentSession =
+  | { agent: "pi"; kind: "path"; value: string }
+  | { agent: "claude"; kind: "id"; value: string };
+
 export interface HerdrAgent {
   status: HerdrAgentStatus;
   paneId: string;
-  sessionPath?: string;
-  sessionId?: string;
+  session?: HerdrAgentSession;
 }
 
 export interface HerdrCommandErrorOptions extends ErrorOptions {
@@ -473,32 +476,33 @@ function readAgent(result: unknown, operation: string): HerdrAgent {
     );
   }
 
-  const session = result.agent.agent_session;
-  const sessionRecord = isRecord(session) ? session : undefined;
+  const rawSession = result.agent.agent_session;
+  const sessionRecord = isRecord(rawSession) ? rawSession : undefined;
   const sessionValue =
     sessionRecord !== undefined &&
     typeof sessionRecord.value === "string" &&
     sessionRecord.value.length > 0
       ? sessionRecord.value
       : undefined;
-  const sessionPath =
+  let session: HerdrAgentSession | undefined;
+  if (
     sessionValue !== undefined &&
     sessionRecord?.agent === "pi" &&
     sessionRecord.kind === "path"
-      ? sessionValue
-      : undefined;
-  const sessionId =
+  ) {
+    session = { agent: "pi", kind: "path", value: sessionValue };
+  } else if (
     sessionValue !== undefined &&
     sessionRecord?.agent === "claude" &&
     sessionRecord.kind === "id"
-      ? sessionValue
-      : undefined;
+  ) {
+    session = { agent: "claude", kind: "id", value: sessionValue };
+  }
 
   return {
     status,
     paneId,
-    ...(sessionPath === undefined ? {} : { sessionPath }),
-    ...(sessionId === undefined ? {} : { sessionId }),
+    ...(session === undefined ? {} : { session }),
   };
 }
 
