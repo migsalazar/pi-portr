@@ -359,7 +359,7 @@ Verify manually:
 - hidden reasoning is absent;
 - partial failures preserve diagnostics.
 
-### Slice 2 — Pi-to-Pi blocking ask (next)
+### Slice 2 — Pi-to-Pi blocking ask (complete)
 
 Implement the complete ask pipeline using `--wait`:
 
@@ -372,7 +372,7 @@ Implement the complete ask pipeline using `--wait`:
 
 This slice validates the transport and result contract before background lifecycle complexity is introduced.
 
-### Slice 3 — Pi-to-Pi asynchronous ask
+### Slice 3 — Pi-to-Pi asynchronous ask (next)
 
 Make ask asynchronous by default:
 
@@ -475,4 +475,4 @@ returns after dispatch, leaves the origin usable, runs Claude under the document
 
 ## 15. Next implementation action
 
-Implement Slice 2 end to end: a blocking, read-only Pi consultation with authoritative result extraction and bounded return delivery. Do not introduce asynchronous lifecycle state until this blocking transport and result contract are verified.
+Implement Slice 3 without changing the verified blocking behavior: persist asynchronous ask operations, monitor completion, deliver bounded results exactly once to the matching origin session, and reconcile unfinished operations after reload or restart.

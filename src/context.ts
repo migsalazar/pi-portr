@@ -132,7 +132,7 @@ function serializeTextMessage(
   label: string,
   content: unknown,
 ): string | undefined {
-  const text = sanitizeText(extractText(content));
+  const text = sanitizeTransferText(extractText(content));
   return text.length > 0 ? `${label}: ${text}` : undefined;
 }
 
@@ -141,13 +141,13 @@ function serializeSummary(label: string, summary: unknown): string | undefined {
     return undefined;
   }
 
-  const text = sanitizeText(summary).trim();
+  const text = sanitizeTransferText(summary).trim();
   return text.length > 0 ? `${label}:\n${text}` : undefined;
 }
 
 function extractText(content: unknown): string {
   if (typeof content === "string") {
-    return sanitizeText(content).trim();
+    return sanitizeTransferText(content).trim();
   }
   if (!Array.isArray(content)) {
     return "";
@@ -160,7 +160,7 @@ function extractText(content: unknown): string {
         block.type === "text" &&
         typeof block.text === "string"
       ) {
-        return [sanitizeText(block.text)];
+        return [sanitizeTransferText(block.text)];
       }
       return [];
     })
@@ -191,14 +191,14 @@ function extractToolPath(argumentsValue: unknown): string | undefined {
   for (const key of ["path", "file_path"] as const) {
     const value = argumentsValue[key];
     if (typeof value === "string" && value.length > 0) {
-      return sanitizeText(value).slice(0, 500);
+      return sanitizeTransferText(value).slice(0, 500);
     }
   }
 
   return undefined;
 }
 
-function sanitizeText(text: string): string {
+export function sanitizeTransferText(text: string): string {
   return text.replace(DATA_URL_PATTERN, "[base64 data omitted]");
 }
 

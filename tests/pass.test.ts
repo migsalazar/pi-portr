@@ -83,6 +83,7 @@ test("launchPiPass starts, prompts, then focuses the destination", async () => {
         "/tmp/project with spaces",
         "--no-focus",
       ],
+      ["pane", "get", "w1:p2"],
       [
         "agent",
         "start",
@@ -114,6 +115,9 @@ test("launchPiPass preserves references and does not focus after prompt failure"
     calls.push(invocation);
     if (invocation.args[1] === "split") {
       return jsonOutput({ pane: { pane_id: "w1:p2" } });
+    }
+    if (invocation.args[1] === "get") {
+      return jsonOutput({ pane: { terminal_id: "term-2" } });
     }
     if (invocation.args[1] === "prompt") {
       throw new Error("prompt rejected");
@@ -147,8 +151,11 @@ test("launchPiPass preserves references and does not focus after prompt failure"
 function createPassRunner(calls: HerdrInvocation[]): HerdrCommandRunner {
   return async (invocation) => {
     calls.push(invocation);
-    return invocation.args[1] === "split"
-      ? jsonOutput({ pane: { pane_id: "w1:p2" } })
+    if (invocation.args[1] === "split") {
+      return jsonOutput({ pane: { pane_id: "w1:p2" } });
+    }
+    return invocation.args[1] === "get"
+      ? jsonOutput({ pane: { terminal_id: "term-2" } })
       : jsonOutput({ ok: true });
   };
 }
