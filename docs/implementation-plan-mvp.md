@@ -1,6 +1,6 @@
 # pi-portr MVP implementation plan
 
-Status: in implementation
+Status: MVP implemented and release-ready
 
 ## 1. Objective
 
@@ -110,11 +110,11 @@ Keep related implementation together until a file has multiple independent respo
 - license: MIT;
 - module format: ESM;
 - Node.js: `>=22.19.0`;
-- peer dependency: `@earendil-works/pi-coding-agent >=0.84.0`;
+- peer dependency: `@earendil-works/pi-coding-agent *`, as required for Pi core packages;
 - extension entrypoint: TypeScript loaded by Pi;
-- Herdr: external runtime prerequisite, not installed by `pi-portr`.
+- Herdr: external runtime prerequisite, version `>=0.8.0`, not installed by `pi-portr`.
 
-The first implementation targets the installed Herdr CLI behavior. The minimum supported Herdr version is documented after its required commands are covered by contract tests.
+The implementation targets Herdr CLI `0.8.0` or newer. In particular, pass relies on `agent prompt --wait` observing a state transition and returning `working` or `blocked` after one submission.
 
 ## 6. Command surface
 
@@ -429,15 +429,16 @@ Do not generalize target or backend interfaces unless the Pi and Claude implemen
 
 ### Integration tests
 
-Integration tests are opt-in and run inside a dedicated Herdr environment. They cover:
+Integration tests are opt-in and run inside a dedicated Herdr environment. The parameterized live runner covers:
 
-- split, start, prompt, wait, read, and focus;
-- Pi child-session extraction;
-- read-only tool arguments;
-- origin reload/restart reconciliation;
-- Claude output completeness.
+- split, start, one-shot prompt acknowledgment, and wait;
+- Pi or Claude durable child-session extraction;
+- pass or blocking-ask launch policy;
+- preservation of the destination pane for inspection.
 
-Tests that call models require an explicit environment variable and are never part of the default unit-test command.
+Asynchronous origin reload/restart reconciliation remains covered by deterministic lifecycle tests and has been validated interactively.
+
+Tests that call models require `PORTR_RUN_MODEL_INTEGRATION=1`, an explicit target and flow, and are never part of the default unit-test command.
 
 ## 13. Failure behavior
 
@@ -458,7 +459,7 @@ For every operation, report which stage failed and any safe references already c
 /portr-pass <pi|claude> <goal>
 ```
 
-opens a visible, independent Pi session containing the exact handoff approved in the editor. The destination is usable immediately and the origin remains intact.
+opens a visible, independent destination session containing the exact handoff approved in the editor. The destination is usable immediately and the origin remains intact.
 
 ### Ask
 
@@ -481,4 +482,4 @@ returns after dispatch, leaves the origin usable, runs Claude under the document
 
 ## 15. Next implementation action
 
-Perform an MVP release-readiness review: audit the package surface and documentation, add opt-in integration-test automation for the verified Herdr flows, and resolve any remaining acceptance-criteria gaps without expanding scope.
+Prepare the `0.1.0` release: add repository metadata after choosing a public remote, review the final package diff, and tag and publish only with explicit approval.
