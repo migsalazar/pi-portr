@@ -82,5 +82,3 @@ npm run test:integration
 ```
 
 `PORTR_INTEGRATION_TARGET` accepts `pi` or `claude`; `PORTR_INTEGRATION_FLOW` accepts `pass` or `ask`. Optional variables are `PORTR_INTEGRATION_MODEL` and `PORTR_INTEGRATION_TIMEOUT_MS` (maximum 300000). The pass flow specifically guards the one-shot prompt-acknowledgment contract: it never retries an ambiguous submission.
-
-See [`docs/implementation-plan-mvp.md`](docs/implementation-plan-mvp.md) for the implementation plan and acceptance criteria.
