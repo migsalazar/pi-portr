@@ -1,34 +1,12 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
-  createHerdrInvocation,
   HerdrClient,
   HerdrCommandError,
   type HerdrCommandRunner,
   parseHerdrError,
   parseHerdrResult,
 } from "../src/herdr.ts";
-
-test("createHerdrInvocation preserves arguments without shell parsing", () => {
-  const args = ["agent", "prompt", "worker name", "line one\nline two"];
-  const invocation = createHerdrInvocation(args);
-
-  assert.deepEqual(invocation, {
-    executable: "herdr",
-    args,
-  });
-  assert.notStrictEqual(invocation.args, args);
-});
-
-test("createHerdrInvocation accepts an injected executable", () => {
-  assert.deepEqual(
-    createHerdrInvocation(["agent", "status"], "/tmp/fake-herdr"),
-    {
-      executable: "/tmp/fake-herdr",
-      args: ["agent", "status"],
-    },
-  );
-});
 
 test("parseHerdrResult rejects malformed JSON", () => {
   assert.throws(
@@ -260,14 +238,14 @@ test("HerdrClient parses current and split pane IDs", async () => {
   };
   const client = new HerdrClient(runner, { HERDR_ENV: "1" });
 
-  assert.deepEqual(await client.currentPane(), { paneId: "w1:p1" });
+  assert.equal(await client.currentPane(), "w1:p1");
   assert.deepEqual(
     await client.splitPane({
       paneId: "w1:p1",
       cwd: "/tmp/project with spaces",
       direction: "right",
     }),
-    { paneId: "w1:p2" },
+    "w1:p2",
   );
   assert.deepEqual(calls, [
     ["pane", "current", "--current"],
@@ -315,7 +293,7 @@ test("HerdrClient retries agent_pane_busy while the same shell initializes", asy
   };
   const client = new HerdrClient(runner, { HERDR_ENV: "1" });
 
-  await client.startPi("worker", "w1:p2", ["--tools", "read"]);
+  await client.startAgent("pi", "worker", "w1:p2", ["--tools", "read"]);
 
   assert.equal(startAttempts, 2);
   assert.deepEqual(calls, [
@@ -374,7 +352,7 @@ test("HerdrClient does not retry a busy pane after terminal replacement", async 
   const client = new HerdrClient(runner, { HERDR_ENV: "1" });
 
   await assert.rejects(
-    () => client.startPi("worker", "w1:p2", []),
+    () => client.startAgent("pi", "worker", "w1:p2", []),
     /not an available shell/,
   );
   assert.equal(startAttempts, 1);

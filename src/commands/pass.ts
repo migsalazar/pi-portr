@@ -134,7 +134,8 @@ export function parsePassArguments(input: string): PassArguments {
     : { target: targetToken, goal, model };
 }
 
-export async function launchPiPass(
+export async function launchPass(
+  target: PassTarget,
   herdr: HerdrClient,
   options: {
     originPaneId: string;
@@ -148,68 +149,26 @@ export async function launchPiPass(
   let paneId: string | undefined;
 
   try {
-    const pane = await herdr.splitPane({
+    paneId = await herdr.splitPane({
       paneId: options.originPaneId,
       cwd: options.cwd,
       direction: "right",
     });
-    paneId = pane.paneId;
 
     stage = "start";
-    await herdr.startPi(
+    await herdr.startAgent(
+      target,
       options.agentName,
       paneId,
-      buildPiLaunchArgs({
-        readOnly: false,
-        ...(options.model === undefined ? {} : { model: options.model }),
-      }),
-    );
-
-    stage = "prompt";
-    await promptPassDestination(herdr, options.agentName, options.prompt);
-
-    stage = "focus";
-    await focusDestinationIfOriginRemainsFocused(
-      herdr,
-      options.originPaneId,
-      options.agentName,
-    );
-
-    return { agentName: options.agentName, paneId };
-  } catch (error) {
-    throw new PassLaunchError(stage, options.agentName, paneId, error);
-  }
-}
-
-export async function launchClaudePass(
-  herdr: HerdrClient,
-  options: {
-    originPaneId: string;
-    cwd: string;
-    agentName: string;
-    prompt: string;
-    model?: string;
-  },
-): Promise<PassLaunchResult> {
-  let stage: PassLaunchStage = "split";
-  let paneId: string | undefined;
-
-  try {
-    const pane = await herdr.splitPane({
-      paneId: options.originPaneId,
-      cwd: options.cwd,
-      direction: "right",
-    });
-    paneId = pane.paneId;
-
-    stage = "start";
-    await herdr.startClaude(
-      options.agentName,
-      paneId,
-      buildClaudeLaunchArgs({
-        readOnly: false,
-        ...(options.model === undefined ? {} : { model: options.model }),
-      }),
+      target === "pi"
+        ? buildPiLaunchArgs({
+            readOnly: false,
+            ...(options.model === undefined ? {} : { model: options.model }),
+          })
+        : buildClaudeLaunchArgs({
+            readOnly: false,
+            ...(options.model === undefined ? {} : { model: options.model }),
+          }),
     );
 
     stage = "prompt";
@@ -286,7 +245,7 @@ async function handlePass(
   const herdr = new HerdrClient();
   let originPaneId: string;
   try {
-    originPaneId = (await herdr.currentPane()).paneId;
+    originPaneId = await herdr.currentPane();
   } catch (error) {
     ctx.ui.notify(`Herdr preflight failed: ${errorMessage(error)}`, "error");
     return;
@@ -343,10 +302,7 @@ async function handlePass(
       prompt: approvedPrompt,
       ...(args.model === undefined ? {} : { model: args.model }),
     };
-    const result =
-      args.target === "pi"
-        ? await launchPiPass(herdr, launchOptions)
-        : await launchClaudePass(herdr, launchOptions);
+    const result = await launchPass(args.target, herdr, launchOptions);
     ctx.ui.notify(
       `Handoff delivered to ${result.agentName} (${result.paneId})`,
       "info",

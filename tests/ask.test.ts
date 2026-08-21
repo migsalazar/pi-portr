@@ -19,8 +19,7 @@ import {
 import {
   AskUsageError,
   buildAskPrompt,
-  launchClaudeAsk,
-  launchPiAsk,
+  launchAsk,
   parseAskArguments,
 } from "../src/commands/ask.ts";
 import {
@@ -93,203 +92,135 @@ test("buildAskPrompt separates and sanitizes context and question", () => {
   assert.match(prompt, /Do not modify files/);
 });
 
-test("launchPiAsk starts read-only Pi and waits without focusing", async () => {
-  const calls: HerdrInvocation[] = [];
-  const runner: HerdrCommandRunner = async (invocation) => {
-    calls.push(invocation);
-    if (invocation.args[1] === "split") {
-      return jsonOutput({ pane: { pane_id: "w1:p2" } });
-    }
-    if (invocation.args[1] === "get") {
-      return jsonOutput({ pane: { terminal_id: "term-2" } });
-    }
-    if (invocation.args[1] === "prompt") {
-      return jsonOutput({
-        agent: {
-          agent_status: "idle",
-          pane_id: "w1:p2",
-          agent_session: {
-            agent: "pi",
-            kind: "path",
-            value: "/tmp/child session.jsonl",
-          },
-        },
-      });
-    }
-    return jsonOutput({ ok: true });
-  };
-  const client = new HerdrClient(runner, { HERDR_ENV: "1" });
-
-  const result = await launchPiAsk(client, {
-    originPaneId: "w1:p1",
-    cwd: "/tmp/project with spaces",
+for (const targetCase of [
+  {
+    target: "pi" as const,
     agentName: "portr-ask-test",
-    prompt: "Question\nwith another line",
-    timeoutMs: 12_345,
     model: "anthropic/claude-sonnet",
-  });
-
-  assert.deepEqual(result, {
-    agentName: "portr-ask-test",
-    paneId: "w1:p2",
-    target: "pi",
     childSession: "/tmp/child session.jsonl",
-    status: "idle",
-  });
-  assert.deepEqual(
-    calls.map((call) => call.args),
-    [
-      [
-        "pane",
-        "split",
-        "--pane",
-        "w1:p1",
-        "--direction",
-        "right",
-        "--cwd",
-        "/tmp/project with spaces",
-        "--no-focus",
-      ],
-      ["pane", "get", "w1:p2"],
-      [
-        "agent",
-        "start",
-        "portr-ask-test",
-        "--kind",
-        "pi",
-        "--pane",
-        "w1:p2",
-        "--timeout",
-        "30000",
-        "--",
-        "--tools",
-        "read,grep,find,ls",
-        "--model",
-        "anthropic/claude-sonnet",
-      ],
-      [
-        "agent",
-        "prompt",
-        "portr-ask-test",
-        "Question\nwith another line",
-        "--wait",
-        "--until",
-        "idle",
-        "--until",
-        "done",
-        "--until",
-        "blocked",
-        "--timeout",
-        "12345",
-      ],
+    session: {
+      agent: "pi",
+      kind: "path",
+      value: "/tmp/child session.jsonl",
+    },
+    launchArgs: [
+      "--tools",
+      "read,grep,find,ls",
+      "--model",
+      "anthropic/claude-sonnet",
     ],
-  );
-  assert.equal(
-    calls.some((call) => call.args[1] === "focus"),
-    false,
-  );
-});
-
-test("launchClaudeAsk starts read-only Claude and preserves its session ID", async () => {
-  const calls: HerdrInvocation[] = [];
-  const runner: HerdrCommandRunner = async (invocation) => {
-    calls.push(invocation);
-    if (invocation.args[1] === "split") {
-      return jsonOutput({ pane: { pane_id: "w1:p2" } });
-    }
-    if (invocation.args[1] === "get") {
-      return jsonOutput({ pane: { terminal_id: "term-2" } });
-    }
-    if (invocation.args[1] === "prompt") {
-      return jsonOutput({
-        agent: {
-          agent_status: "idle",
-          pane_id: "w1:p2",
-          agent_session: {
-            agent: "claude",
-            kind: "id",
-            value: "12345678-1234-1234-1234-123456789abc",
-          },
-        },
-      });
-    }
-    return jsonOutput({ ok: true });
-  };
-  const client = new HerdrClient(runner, { HERDR_ENV: "1" });
-
-  const result = await launchClaudeAsk(client, {
-    originPaneId: "w1:p1",
-    cwd: "/tmp/project with spaces",
+  },
+  {
+    target: "claude" as const,
     agentName: "portr-ask-claude-test",
-    prompt: "Question\nwith another line",
-    timeoutMs: 12_345,
     model: "sonnet",
-  });
-
-  assert.deepEqual(result, {
-    target: "claude",
-    agentName: "portr-ask-claude-test",
-    paneId: "w1:p2",
     childSession: "12345678-1234-1234-1234-123456789abc",
-    status: "idle",
-  });
-  assert.deepEqual(
-    calls.map((call) => call.args),
-    [
-      [
-        "pane",
-        "split",
-        "--pane",
-        "w1:p1",
-        "--direction",
-        "right",
-        "--cwd",
-        "/tmp/project with spaces",
-        "--no-focus",
-      ],
-      ["pane", "get", "w1:p2"],
-      [
-        "agent",
-        "start",
-        "portr-ask-claude-test",
-        "--kind",
-        "claude",
-        "--pane",
-        "w1:p2",
-        "--timeout",
-        "30000",
-        "--",
-        "--tools",
-        "Read,Grep,Glob",
-        "--disallowedTools",
-        "mcp__*",
-        "--permission-mode",
-        "dontAsk",
-        "--model",
-        "sonnet",
-      ],
-      [
-        "agent",
-        "prompt",
-        "portr-ask-claude-test",
-        "Question\nwith another line",
-        "--wait",
-        "--until",
-        "idle",
-        "--until",
-        "done",
-        "--until",
-        "blocked",
-        "--timeout",
-        "12345",
-      ],
+    session: {
+      agent: "claude",
+      kind: "id",
+      value: "12345678-1234-1234-1234-123456789abc",
+    },
+    launchArgs: [
+      "--tools",
+      "Read,Grep,Glob",
+      "--disallowedTools",
+      "mcp__*",
+      "--permission-mode",
+      "dontAsk",
+      "--model",
+      "sonnet",
     ],
-  );
-  assert.equal(
-    calls.some((call) => call.args[1] === "focus"),
-    false,
-  );
-});
+  },
+]) {
+  test(`launchAsk starts read-only ${targetCase.target} and preserves its session`, async () => {
+    const calls: HerdrInvocation[] = [];
+    const runner: HerdrCommandRunner = async (invocation) => {
+      calls.push(invocation);
+      if (invocation.args[1] === "split") {
+        return jsonOutput({ pane: { pane_id: "w1:p2" } });
+      }
+      if (invocation.args[1] === "get") {
+        return jsonOutput({ pane: { terminal_id: "term-2" } });
+      }
+      if (invocation.args[1] === "prompt") {
+        return jsonOutput({
+          agent: {
+            agent_status: "idle",
+            pane_id: "w1:p2",
+            agent_session: targetCase.session,
+          },
+        });
+      }
+      return jsonOutput({ ok: true });
+    };
+    const client = new HerdrClient(runner, { HERDR_ENV: "1" });
+
+    const result = await launchAsk(targetCase.target, client, {
+      originPaneId: "w1:p1",
+      cwd: "/tmp/project with spaces",
+      agentName: targetCase.agentName,
+      prompt: "Question\nwith another line",
+      timeoutMs: 12_345,
+      model: targetCase.model,
+    });
+
+    assert.deepEqual(result, {
+      target: targetCase.target,
+      agentName: targetCase.agentName,
+      paneId: "w1:p2",
+      childSession: targetCase.childSession,
+    });
+    assert.deepEqual(
+      calls.map((call) => call.args),
+      [
+        [
+          "pane",
+          "split",
+          "--pane",
+          "w1:p1",
+          "--direction",
+          "right",
+          "--cwd",
+          "/tmp/project with spaces",
+          "--no-focus",
+        ],
+        ["pane", "get", "w1:p2"],
+        [
+          "agent",
+          "start",
+          targetCase.agentName,
+          "--kind",
+          targetCase.target,
+          "--pane",
+          "w1:p2",
+          "--timeout",
+          "30000",
+          "--",
+          ...targetCase.launchArgs,
+        ],
+        [
+          "agent",
+          "prompt",
+          targetCase.agentName,
+          "Question\nwith another line",
+          "--wait",
+          "--until",
+          "idle",
+          "--until",
+          "done",
+          "--until",
+          "blocked",
+          "--timeout",
+          "12345",
+        ],
+      ],
+    );
+    assert.equal(
+      calls.some((call) => call.args[1] === "focus"),
+      false,
+    );
+  });
+}
 
 test("target session contracts reject the other harness reference", () => {
   const piSession = {
@@ -312,7 +243,7 @@ test("target session contracts reject the other harness reference", () => {
   assert.equal(resolveClaudeSessionReference(piSession), undefined);
 });
 
-test("launchPiAsk preserves references when the destination is blocked", async () => {
+test("launchAsk preserves references when the destination is blocked", async () => {
   const runner: HerdrCommandRunner = async (invocation) => {
     if (invocation.args[1] === "split") {
       return jsonOutput({ pane: { pane_id: "w1:p2" } });
@@ -339,7 +270,7 @@ test("launchPiAsk preserves references when the destination is blocked", async (
 
   await assert.rejects(
     () =>
-      launchPiAsk(client, {
+      launchAsk("pi", client, {
         originPaneId: "w1:p1",
         cwd: "/tmp/project",
         agentName: "portr-ask-test",
@@ -357,7 +288,7 @@ test("launchPiAsk preserves references when the destination is blocked", async (
   );
 });
 
-test("launchPiAsk rejects ambiguous lifecycle states", async () => {
+test("launchAsk rejects ambiguous lifecycle states", async () => {
   const runner: HerdrCommandRunner = async (invocation) => {
     if (invocation.args[1] === "split") {
       return jsonOutput({ pane: { pane_id: "w1:p2" } });
@@ -376,7 +307,7 @@ test("launchPiAsk rejects ambiguous lifecycle states", async () => {
 
   await assert.rejects(
     () =>
-      launchPiAsk(client, {
+      launchAsk("pi", client, {
         originPaneId: "w1:p1",
         cwd: "/tmp/project",
         agentName: "portr-ask-test",

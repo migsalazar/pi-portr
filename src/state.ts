@@ -14,7 +14,6 @@ export const OPERATION_STATUSES = [
 export type OperationStatus = (typeof OPERATION_STATUSES)[number];
 
 export const FAILURE_REASONS = [
-  "launch_failed",
   "prompt_failed",
   "timeout",
   "blocked",

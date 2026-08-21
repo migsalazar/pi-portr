@@ -23,10 +23,6 @@ export type HerdrCommandRunner = (
   timeoutMs: number,
 ) => Promise<HerdrProcessOutput>;
 
-export interface HerdrPane {
-  paneId: string;
-}
-
 export interface SplitPaneOptions {
   paneId: string;
   cwd: string;
@@ -88,7 +84,7 @@ export class HerdrClient {
     this.environment = environment;
   }
 
-  async currentPane(): Promise<HerdrPane> {
+  async currentPane(): Promise<string> {
     if (this.environment.HERDR_ENV !== "1") {
       throw new HerdrCommandError(
         "preflight",
@@ -97,10 +93,10 @@ export class HerdrClient {
     }
 
     const result = await this.execute(["pane", "current", "--current"]);
-    return { paneId: readPaneId(result, "pane current") };
+    return readPaneId(result, "pane current");
   }
 
-  async splitPane(options: SplitPaneOptions): Promise<HerdrPane> {
+  async splitPane(options: SplitPaneOptions): Promise<string> {
     const result = await this.execute([
       "pane",
       "split",
@@ -112,32 +108,12 @@ export class HerdrClient {
       options.cwd,
       "--no-focus",
     ]);
-    return { paneId: readPaneId(result, "pane split") };
+    return readPaneId(result, "pane split");
   }
 
   async paneIsFocused(paneId: string): Promise<boolean> {
     const result = await this.execute(["pane", "get", paneId]);
     return readPaneFocused(result, "pane get");
-  }
-
-  async startPi(
-    agentName: string,
-    paneId: string,
-    piArgs: readonly string[],
-  ): Promise<void> {
-    await this.startAgent("pi", agentName, paneId, piArgs);
-  }
-
-  async startClaude(
-    agentName: string,
-    paneId: string,
-    claudeArgs: readonly string[],
-  ): Promise<void> {
-    await this.startAgent("claude", agentName, paneId, claudeArgs);
-  }
-
-  async prompt(agentName: string, prompt: string): Promise<void> {
-    await this.execute(["agent", "prompt", agentName, prompt]);
   }
 
   async promptUntilWorking(
@@ -221,7 +197,7 @@ export class HerdrClient {
     await this.execute(["agent", "focus", agentName]);
   }
 
-  private async startAgent(
+  async startAgent(
     kind: "pi" | "claude",
     agentName: string,
     paneId: string,
@@ -302,20 +278,12 @@ export class HerdrClient {
     args: readonly string[],
     timeoutMs = DEFAULT_COMMAND_TIMEOUT_MS,
   ): Promise<unknown> {
-    const invocation = createHerdrInvocation(args);
-    const output = await this.runner(invocation, timeoutMs);
+    const output = await this.runner(
+      { executable: HERDR_EXECUTABLE, args: [...args] },
+      timeoutMs,
+    );
     return parseHerdrResult(output.stdout, operationName(args));
   }
-}
-
-export function createHerdrInvocation(
-  args: readonly string[],
-  executable = HERDR_EXECUTABLE,
-): HerdrInvocation {
-  return {
-    executable,
-    args: [...args],
-  };
 }
 
 export const runHerdrCommand: HerdrCommandRunner = (invocation, timeoutMs) =>

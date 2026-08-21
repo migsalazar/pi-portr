@@ -7,6 +7,7 @@ import {
   ASK_RESULT_RETRY_INTERVAL_MS,
   ASK_RESULT_RETRY_TIMEOUT_MS,
   ASK_WAIT_TIMEOUT_MS,
+  type AskDestination,
   AskLaunchError,
   type AskLaunchResult,
   type AskLaunchStage,
@@ -172,12 +173,8 @@ export function buildAskPrompt(context: string, question: string): string {
   ].join("\n");
 }
 
-export interface AskDestination {
-  agentName: string;
-  paneId: string;
-}
-
-export async function startPiAskDestination(
+export async function startAskDestination(
+  target: AskTarget,
   herdr: HerdrClient,
   options: {
     originPaneId: string;
@@ -190,59 +187,26 @@ export async function startPiAskDestination(
   let paneId: string | undefined;
 
   try {
-    const pane = await herdr.splitPane({
+    paneId = await herdr.splitPane({
       paneId: options.originPaneId,
       cwd: options.cwd,
       direction: "right",
     });
-    paneId = pane.paneId;
 
     stage = "start";
-    await herdr.startPi(
+    await herdr.startAgent(
+      target,
       options.agentName,
       paneId,
-      buildPiLaunchArgs({
-        readOnly: true,
-        ...(options.model === undefined ? {} : { model: options.model }),
-      }),
-    );
-    return { agentName: options.agentName, paneId };
-  } catch (error) {
-    if (error instanceof AskLaunchError) {
-      throw error;
-    }
-    throw new AskLaunchError(stage, options.agentName, paneId, error);
-  }
-}
-
-export async function startClaudeAskDestination(
-  herdr: HerdrClient,
-  options: {
-    originPaneId: string;
-    cwd: string;
-    agentName: string;
-    model?: string;
-  },
-): Promise<AskDestination> {
-  let stage: AskLaunchStage = "split";
-  let paneId: string | undefined;
-
-  try {
-    const pane = await herdr.splitPane({
-      paneId: options.originPaneId,
-      cwd: options.cwd,
-      direction: "right",
-    });
-    paneId = pane.paneId;
-
-    stage = "start";
-    await herdr.startClaude(
-      options.agentName,
-      paneId,
-      buildClaudeLaunchArgs({
-        readOnly: true,
-        ...(options.model === undefined ? {} : { model: options.model }),
-      }),
+      target === "pi"
+        ? buildPiLaunchArgs({
+            readOnly: true,
+            ...(options.model === undefined ? {} : { model: options.model }),
+          })
+        : buildClaudeLaunchArgs({
+            readOnly: true,
+            ...(options.model === undefined ? {} : { model: options.model }),
+          }),
     );
     return { agentName: options.agentName, paneId };
   } catch (error) {
@@ -250,7 +214,8 @@ export async function startClaudeAskDestination(
   }
 }
 
-export async function launchPiAsk(
+export async function launchAsk(
+  target: AskTarget,
   herdr: HerdrClient,
   options: {
     originPaneId: string;
@@ -261,7 +226,7 @@ export async function launchPiAsk(
     model?: string;
   },
 ): Promise<AskLaunchResult> {
-  const destination = await startPiAskDestination(herdr, options);
+  const destination = await startAskDestination(target, herdr, options);
 
   try {
     const agent = await herdr.promptAndWait(
@@ -269,40 +234,7 @@ export async function launchPiAsk(
       options.prompt,
       options.timeoutMs ?? ASK_WAIT_TIMEOUT_MS,
     );
-    return resolveSettledAskAgent("pi", destination, agent);
-  } catch (error) {
-    if (error instanceof AskLaunchError) {
-      throw error;
-    }
-    throw new AskLaunchError(
-      "prompt_wait",
-      destination.agentName,
-      destination.paneId,
-      error,
-    );
-  }
-}
-
-export async function launchClaudeAsk(
-  herdr: HerdrClient,
-  options: {
-    originPaneId: string;
-    cwd: string;
-    agentName: string;
-    prompt: string;
-    timeoutMs?: number;
-    model?: string;
-  },
-): Promise<AskLaunchResult> {
-  const destination = await startClaudeAskDestination(herdr, options);
-
-  try {
-    const agent = await herdr.promptAndWait(
-      destination.agentName,
-      options.prompt,
-      options.timeoutMs ?? ASK_WAIT_TIMEOUT_MS,
-    );
-    return resolveSettledAskAgent("claude", destination, agent);
+    return resolveSettledAskAgent(target, destination, agent);
   } catch (error) {
     if (error instanceof AskLaunchError) {
       throw error;
@@ -347,7 +279,7 @@ async function handleAsk(
   const herdr = new HerdrClient();
   let originPaneId: string;
   try {
-    originPaneId = (await herdr.currentPane()).paneId;
+    originPaneId = await herdr.currentPane();
   } catch (error) {
     ctx.ui.notify(`Herdr preflight failed: ${errorMessage(error)}`, "error");
     return;
@@ -404,10 +336,11 @@ async function handleAsk(
         agentName,
         ...(args.model === undefined ? {} : { model: args.model }),
       };
-      const destination =
-        args.target === "pi"
-          ? await startPiAskDestination(herdr, destinationOptions)
-          : await startClaudeAskDestination(herdr, destinationOptions);
+      const destination = await startAskDestination(
+        args.target,
+        herdr,
+        destinationOptions,
+      );
       const now = Date.now();
       const operation: AsyncAskOperation = {
         version: ASYNC_ASK_STATE_VERSION,
@@ -448,10 +381,7 @@ async function handleAsk(
       prompt,
       ...(args.model === undefined ? {} : { model: args.model }),
     };
-    launch =
-      args.target === "pi"
-        ? await launchPiAsk(herdr, launchOptions)
-        : await launchClaudeAsk(herdr, launchOptions);
+    launch = await launchAsk(args.target, herdr, launchOptions);
   } catch (error) {
     ctx.ui.notify(errorMessage(error), "error");
     return;

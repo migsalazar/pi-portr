@@ -1,12 +1,13 @@
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import test from "node:test";
+import { retryAskResultExtraction } from "../../src/async-ask.ts";
 import {
   extractClaudeSessionAnswer,
   resolveClaudeSessionReference,
 } from "../../src/claude-target.ts";
-import { launchClaudeAsk, launchPiAsk } from "../../src/commands/ask.ts";
-import { launchClaudePass, launchPiPass } from "../../src/commands/pass.ts";
+import { launchAsk } from "../../src/commands/ask.ts";
+import { launchPass } from "../../src/commands/pass.ts";
 import {
   type HerdrAgent,
   type HerdrAgentStatus,
@@ -51,7 +52,7 @@ test("live Herdr destination acknowledges one prompt and yields a durable answer
   ].join("\n");
   const cwd = process.cwd();
   const herdr = new HerdrClient();
-  const originPaneId = (await herdr.currentPane()).paneId;
+  const originPaneId = await herdr.currentPane();
 
   const launchOptions = {
     originPaneId,
@@ -63,8 +64,8 @@ test("live Herdr destination acknowledges one prompt and yields a durable answer
   };
   const destination =
     flow === "pass"
-      ? await launchPass(target, herdr, launchOptions)
-      : await launchAsk(target, herdr, launchOptions);
+      ? await runPassFlow(target, herdr, launchOptions)
+      : await runAskFlow(target, herdr, launchOptions);
 
   const answer = await extractAnswerWithRetry(
     target,
@@ -81,7 +82,7 @@ test("live Herdr destination acknowledges one prompt and yields a durable answer
   context.diagnostic("destination pane intentionally preserved");
 });
 
-async function launchPass(
+async function runPassFlow(
   target: IntegrationTarget,
   herdr: HerdrClient,
   options: LaunchOptions,
@@ -93,16 +94,13 @@ async function launchPass(
     prompt: options.prompt,
     ...(options.model === undefined ? {} : { model: options.model }),
   };
-  const launched =
-    target === "pi"
-      ? await launchPiPass(herdr, launchOptions)
-      : await launchClaudePass(herdr, launchOptions);
+  const launched = await launchPass(target, herdr, launchOptions);
 
   const agent = await herdr.waitForAgent(options.agentName, options.timeoutMs);
   return settledDestination(target, launched.paneId, agent);
 }
 
-async function launchAsk(
+async function runAskFlow(
   target: IntegrationTarget,
   herdr: HerdrClient,
   options: LaunchOptions,
@@ -115,10 +113,7 @@ async function launchAsk(
     timeoutMs: options.timeoutMs,
     ...(options.model === undefined ? {} : { model: options.model }),
   };
-  const launched =
-    target === "pi"
-      ? await launchPiAsk(herdr, launchOptions)
-      : await launchClaudeAsk(herdr, launchOptions);
+  const launched = await launchAsk(target, herdr, launchOptions);
 
   return {
     paneId: launched.paneId,
@@ -154,19 +149,14 @@ async function extractAnswerWithRetry(
   childSession: string,
   cwd: string,
 ): Promise<string> {
-  const deadline = Date.now() + 2_000;
-  let lastError: unknown;
-  do {
-    try {
-      return target === "pi"
+  return retryAskResultExtraction(
+    () =>
+      target === "pi"
         ? extractPiSessionAnswer(childSession)
-        : extractClaudeSessionAnswer(childSession, cwd);
-    } catch (error) {
-      lastError = error;
-      await delay(100);
-    }
-  } while (Date.now() < deadline);
-  throw lastError;
+        : extractClaudeSessionAnswer(childSession, cwd),
+    2_000,
+    100,
+  );
 }
 
 function readChoice<const T extends readonly string[]>(
@@ -199,10 +189,6 @@ function readTimeout(): number {
 
 function countOccurrences(text: string, value: string): number {
   return text.split(value).length - 1;
-}
-
-function delay(timeoutMs: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, timeoutMs));
 }
 
 interface LaunchOptions {

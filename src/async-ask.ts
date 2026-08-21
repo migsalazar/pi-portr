@@ -50,24 +50,6 @@ export interface AskLaunchResult {
   agentName: string;
   paneId: string;
   childSession: string;
-  status: "idle" | "done";
-}
-
-export interface AskResultMetadata {
-  operationId: string;
-  target: AskTarget;
-  agentName: string;
-  paneId: string;
-  childSession: string;
-  status: "completed";
-  truncated: boolean;
-  originalAnswerLength: number;
-  originSession?: string;
-}
-
-export interface AskResultMessage {
-  content: string;
-  details: AskResultMetadata;
 }
 
 export interface AskDeliveryPort {
@@ -203,7 +185,6 @@ export function resolveSettledAskAgent(
     agentName: destination.agentName,
     paneId: agent.paneId,
     childSession,
-    status: agent.status,
   };
 }
 
@@ -216,7 +197,7 @@ export function buildAskResultMessage(options: {
   paneId: string;
   childSession: string;
   originSession?: string;
-}): AskResultMessage {
+}) {
   const boundedAnswer = boundText(
     sanitizeTransferText(options.answer),
     MAX_RETURN_ANSWER_CHARACTERS,
