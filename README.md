@@ -4,17 +4,22 @@ Hand off work and ask questions across visible, independent agent sessions.
 
 `pi-portr` is a Pi extension that uses Herdr to launch destination agents while keeping context transfer explicit, bounded, and reviewable.
 
-> Status: early development. The commands below are planned and not yet implemented.
+> Status: early development. Pi-to-Pi pass is implemented; ask and Claude destinations remain planned.
 
-## Planned commands
+## Usage
 
 ```text
-/portr-pass <pi|claude> <goal>
-/portr-ask <pi|claude> <question>
+/portr-pass pi [--model <model>] <goal>
 ```
 
-- **Pass** moves the continuation to another visible session after context preview.
-- **Ask** runs a read-only consultation and returns a bounded answer to the origin.
+Pass builds a bounded semantic handoff from the active Pi context, opens it for review, and starts a visible Pi destination through Herdr after approval.
+
+Planned MVP commands:
+
+```text
+/portr-pass claude <goal>
+/portr-ask <pi|claude> <question>
+```
 
 ## Initial scope
 

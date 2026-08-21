@@ -1,6 +1,6 @@
 # pi-portr MVP implementation plan
 
-Status: ready for implementation
+Status: in implementation
 
 ## 1. Objective
 
@@ -322,7 +322,7 @@ This allows an active origin turn to finish before the consultation result is pr
 
 ## 11. Vertical implementation slices
 
-### Slice 0 — Minimal package
+### Slice 0 — Minimal package (complete)
 
 Deliver:
 
@@ -338,7 +338,7 @@ Verify:
 - normal tests do not invoke paid models;
 - dry-run package contents contain only intended files.
 
-### Slice 1 — Pi-to-Pi pass
+### Slice 1 — Pi-to-Pi pass (complete)
 
 Deliver one complete user flow:
 
@@ -359,7 +359,7 @@ Verify manually:
 - hidden reasoning is absent;
 - partial failures preserve diagnostics.
 
-### Slice 2 — Pi-to-Pi blocking ask
+### Slice 2 — Pi-to-Pi blocking ask (next)
 
 Implement the complete ask pipeline using `--wait`:
 
@@ -473,6 +473,6 @@ returns after dispatch, leaves the origin usable, runs Claude under the document
 - tested asynchronous idempotency and restart recovery;
 - passing typecheck, lint/format, unit tests, and package dry run.
 
-## 15. First implementation action
+## 15. Next implementation action
 
-Create Slice 0 with the files in the initial scaffold and the smallest dependency set required by Pi's extension API and the selected test/tooling stack. Then implement Slice 1 end to end before adding more context policies, state abstractions, target adapters, or configuration surfaces.
+Implement Slice 2 end to end: a blocking, read-only Pi consultation with authoritative result extraction and bounded return delivery. Do not introduce asynchronous lifecycle state until this blocking transport and result contract are verified.
