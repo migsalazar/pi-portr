@@ -2,10 +2,14 @@ import {
   buildSessionContext,
   type SessionManager,
 } from "@earendil-works/pi-coding-agent";
+import { ASYNC_ASK_RESULT_MESSAGE } from "./state.ts";
 
 export const DEFAULT_CONTEXT_CHARACTER_LIMIT = 60_000;
 
 const OMITTED_CONTEXT_MARKER = "[Earlier context omitted due to size]";
+const OMITTED_MESSAGES_MARKER = "[Earlier messages omitted due to size]";
+const OMITTED_COMPACTION_MIDDLE_MARKER =
+  "[Middle of compacted context omitted due to size]";
 const DATA_URL_PATTERN = /data:[^;\s]+;base64,[a-zA-Z0-9+/=_-]+/g;
 
 type ContextSessionManager = Pick<SessionManager, "getEntries" | "getLeafId">;
@@ -72,14 +76,58 @@ export function buildTransferContext(
   sessionManager: ContextSessionManager,
   maxCharacters = DEFAULT_CONTEXT_CHARACTER_LIMIT,
 ): BoundedText {
+  validateLimit(maxCharacters);
+
   const context = buildSessionContext(
     sessionManager.getEntries(),
     sessionManager.getLeafId(),
   );
-  return boundTextFromEnd(
-    serializeTransferMessages(context.messages),
-    maxCharacters,
+  const serialized = serializeTransferMessages(context.messages);
+  if (serialized.length <= maxCharacters) {
+    return {
+      text: serialized,
+      truncated: false,
+      originalLength: serialized.length,
+    };
+  }
+
+  const compactionIndex = context.messages.findLastIndex(
+    (message) => isRecord(message) && message.role === "compactionSummary",
   );
+  const compaction = serializeMessage(context.messages[compactionIndex]);
+  if (compactionIndex < 0 || compaction === undefined) {
+    return {
+      text: boundTransferMessagesFromEnd(context.messages, maxCharacters),
+      truncated: true,
+      originalLength: serialized.length,
+    };
+  }
+  if (compaction.length >= maxCharacters) {
+    return {
+      text: boundOversizedCompaction(compaction, maxCharacters),
+      truncated: true,
+      originalLength: serialized.length,
+    };
+  }
+
+  const recentMessages = context.messages.filter(
+    (_message, index) => index !== compactionIndex,
+  );
+  const recent = serializeTransferMessages(recentMessages);
+  const available = maxCharacters - compaction.length - 2;
+  if (available <= 0 || recent.length === 0) {
+    return {
+      text: compaction,
+      truncated: true,
+      originalLength: serialized.length,
+    };
+  }
+
+  return {
+    text: `${compaction}\n\n${boundTransferMessagesFromEnd(recentMessages, available)}`,
+    truncated: true,
+    originalLength: serialized.length,
+  };
 }
 
 function serializeMessage(message: unknown): string | undefined {
@@ -102,9 +150,88 @@ function serializeMessage(message: unknown): string | undefined {
       return serializeSummary("Compacted context", message.summary);
     case "branchSummary":
       return serializeSummary("Branch summary", message.summary);
+    case "custom": {
+      if (
+        message.customType !== ASYNC_ASK_RESULT_MESSAGE ||
+        message.display !== true
+      ) {
+        return undefined;
+      }
+      const text = extractText(message.content);
+      return text.length > 0 ? text : undefined;
+    }
     default:
       return undefined;
   }
+}
+
+function boundTransferMessagesFromEnd(
+  messages: readonly unknown[],
+  maxCharacters: number,
+): string {
+  const sections = messages.flatMap((message) => {
+    const section = serializeMessage(message);
+    return section === undefined ? [] : [section];
+  });
+  const serialized = sections.join("\n\n");
+  if (serialized.length <= maxCharacters) {
+    return serialized;
+  }
+
+  const marker = `${OMITTED_MESSAGES_MARKER}\n\n`;
+  const latest = sections.at(-1);
+  if (latest === undefined) {
+    return "";
+  }
+  if (marker.length >= maxCharacters) {
+    return latest.slice(-maxCharacters);
+  }
+
+  const selected: string[] = [];
+  let usedCharacters = marker.length;
+  for (let index = sections.length - 1; index >= 0; index -= 1) {
+    const section = sections[index];
+    if (section === undefined) {
+      continue;
+    }
+    const separatorCharacters = selected.length === 0 ? 0 : 2;
+    if (usedCharacters + separatorCharacters + section.length > maxCharacters) {
+      if (selected.length === 0) {
+        return marker + section.slice(-(maxCharacters - marker.length));
+      }
+      break;
+    }
+    selected.unshift(section);
+    usedCharacters += separatorCharacters + section.length;
+  }
+
+  return marker + selected.join("\n\n");
+}
+
+function boundOversizedCompaction(
+  compaction: string,
+  maxCharacters: number,
+): string {
+  if (compaction.length <= maxCharacters) {
+    return compaction;
+  }
+
+  const marker = `\n\n${OMITTED_COMPACTION_MIDDLE_MARKER}\n\n`;
+  if (marker.length >= maxCharacters) {
+    const headLength = Math.ceil(maxCharacters / 2);
+    return (
+      compaction.slice(0, headLength) +
+      compaction.slice(-(maxCharacters - headLength))
+    );
+  }
+
+  const contentCharacters = maxCharacters - marker.length;
+  const headLength = Math.ceil(contentCharacters / 2);
+  return (
+    compaction.slice(0, headLength) +
+    marker +
+    compaction.slice(-(contentCharacters - headLength))
+  );
 }
 
 function serializeAssistantMessage(

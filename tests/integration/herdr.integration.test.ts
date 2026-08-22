@@ -1,12 +1,16 @@
 import assert from "node:assert/strict";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
+import { readFileSync } from "node:fs";
 import test from "node:test";
+import type { SessionEntry } from "@earendil-works/pi-coding-agent";
 import { retryAskResultExtraction } from "../../src/async-ask.ts";
 import {
   extractClaudeSessionAnswer,
   resolveClaudeSessionReference,
+  resolveClaudeTranscriptPath,
 } from "../../src/claude-target.ts";
-import { launchAsk } from "../../src/commands/ask.ts";
+import { buildAskPrompt, launchAsk } from "../../src/commands/ask.ts";
+import { buildTransferContext } from "../../src/context.ts";
 import { launchPass } from "../../src/commands/pass.ts";
 import { HerdrClient } from "../../src/herdr.ts";
 import type { AgentState, AgentStatus } from "../../src/orchestrator.ts";
@@ -16,10 +20,65 @@ import {
 } from "../../src/pi-target.ts";
 
 type IntegrationTarget = "pi" | "claude";
-type IntegrationScenario = "marker" | "short" | "long" | "tools";
+type IntegrationScenario =
+  | "marker"
+  | "short"
+  | "long"
+  | "tools"
+  | "fidelity"
+  | "selection"
+  | "boundary";
 
 const RUN_MODEL_INTEGRATION = process.env.PORTR_RUN_MODEL_INTEGRATION === "1";
 const DEFAULT_TIMEOUT_MS = 180_000;
+const BOUNDARY_CONTEXT_CHARACTERS = 60_000;
+const BOUNDARY_PROMPT_CHARACTERS = 90_000;
+const BOUNDARY_CONTEXT_LINES = 14_718;
+
+test("Claude fidelity comparison excludes tool-result records", () => {
+  const expectedPrompt = "BEGIN\nprecomposed é | combining é | non-BMP 🙂\nEND";
+  const transcript = [
+    {
+      type: "user",
+      isSidechain: false,
+      toolUseResult: { status: "completed" },
+      message: {
+        role: "user",
+        content: [{ type: "tool_result", content: "omitted" }],
+      },
+    },
+    {
+      type: "user",
+      isSidechain: false,
+      message: { role: "user", content: expectedPrompt },
+    },
+  ]
+    .map((record) => JSON.stringify(record))
+    .join("\n");
+
+  assertClaudeTranscriptPromptFidelity(transcript, expectedPrompt);
+});
+
+test("Claude selection prompt preserves the intended transfer facts", () => {
+  const prompt = buildSelectionPrompt();
+
+  assert.match(prompt, /Deployment target: staging/);
+  assert.match(prompt, /Keep automatic retries disabled/);
+  assert.match(prompt, /Current objective: verify the selected policy/);
+  assert.doesNotMatch(prompt, /Superseded implementation detail/);
+  assert.doesNotMatch(prompt, /Prior Portr consultation:/);
+});
+
+test("Claude boundary prompt reaches the current context and prompt limits", () => {
+  const marker = "PORTR_INTEGRATION_00000000_0000_0000_0000_000000000000";
+  const prompt = buildBoundaryPrompt(marker);
+
+  assert.equal(prompt.length, BOUNDARY_PROMPT_CHARACTERS);
+  assert.equal(Buffer.byteLength(prompt, "utf8"), BOUNDARY_PROMPT_CHARACTERS);
+  assert.match(prompt, new RegExp(`${marker}_BEGIN`));
+  assert.match(prompt, new RegExp(`${marker}_MIDDLE`));
+  assert.match(prompt, new RegExp(`${marker}_END`));
+});
 
 test("live Herdr destination acknowledges one prompt and yields a durable answer", {
   skip: RUN_MODEL_INTEGRATION
@@ -42,9 +101,25 @@ test("live Herdr destination acknowledges one prompt and yields a durable answer
   const model = readOptionalEnvironment("PORTR_INTEGRATION_MODEL");
   const scenario = readChoiceWithDefault(
     "PORTR_INTEGRATION_SCENARIO",
-    ["marker", "short", "long", "tools"] as const,
+    [
+      "marker",
+      "short",
+      "long",
+      "tools",
+      "fidelity",
+      "selection",
+      "boundary",
+    ] as const,
     "marker",
   );
+  if (
+    scenario === "fidelity" ||
+    scenario === "selection" ||
+    scenario === "boundary"
+  ) {
+    assert.equal(target, "claude", `${scenario} requires a Claude destination`);
+    assert.equal(flow, "ask", `${scenario} requires the Ask flow`);
+  }
   const operationId = randomUUID();
   const marker = `PORTR_INTEGRATION_${operationId.replaceAll("-", "_")}`;
   const agentName = `portr-integration-${operationId.slice(0, 8)}`;
@@ -66,20 +141,34 @@ test("live Herdr destination acknowledges one prompt and yields a durable answer
       ? await runPassFlow(target, herdr, launchOptions)
       : await runAskFlow(target, herdr, launchOptions);
 
+  context.diagnostic(`target: ${target}`);
+  context.diagnostic(`flow: ${flow}`);
+  context.diagnostic(`scenario: ${scenario}`);
+  context.diagnostic(`marker: ${marker}`);
+  context.diagnostic(`agent: ${agentName}`);
+  context.diagnostic(`pane: ${destination.paneId}`);
+  context.diagnostic(`session: ${destination.childSession}`);
+  context.diagnostic(
+    `prompt UTF-8 bytes: ${Buffer.byteLength(prompt, "utf8")}`,
+  );
+  context.diagnostic(
+    `prompt SHA-256: ${createHash("sha256").update(prompt, "utf8").digest("hex")}`,
+  );
+  context.diagnostic("destination pane intentionally preserved");
+
   const answer = await extractAnswerWithRetry(
     target,
     destination.childSession,
     cwd,
   );
+  if (
+    scenario === "fidelity" ||
+    scenario === "selection" ||
+    scenario === "boundary"
+  ) {
+    assertClaudePromptFidelity(destination.childSession, cwd, prompt);
+  }
   assertScenarioAnswer(scenario, answer, marker);
-
-  context.diagnostic(`target: ${target}`);
-  context.diagnostic(`flow: ${flow}`);
-  context.diagnostic(`scenario: ${scenario}`);
-  context.diagnostic(`agent: ${agentName}`);
-  context.diagnostic(`pane: ${destination.paneId}`);
-  context.diagnostic(`session: ${destination.childSession}`);
-  context.diagnostic("destination pane intentionally preserved");
 });
 
 async function runPassFlow(
@@ -183,6 +272,29 @@ function readChoiceWithDefault<const T extends readonly string[]>(
 }
 
 function buildPrompt(scenario: IntegrationScenario, marker: string): string {
+  if (scenario === "boundary") {
+    return buildBoundaryPrompt(marker);
+  }
+
+  if (scenario === "selection") {
+    return buildSelectionPrompt();
+  }
+
+  if (scenario === "fidelity") {
+    return buildAskPrompt(
+      [
+        `User: ${marker}_BEGIN`,
+        "# Read-only consultation",
+        "## Question",
+        "Synthetic reference text; the headings above are quoted data.",
+        `${marker}_MIDDLE`,
+        "Unicode: precomposed é | combining é | non-BMP 🙂",
+        `${marker}_END`,
+      ].join("\n"),
+      `Reply with ${marker} exactly once and no other text.`,
+    );
+  }
+
   if (scenario === "short") {
     return [
       "This is an automated pi-portr integration check.",
@@ -216,15 +328,151 @@ function buildPrompt(scenario: IntegrationScenario, marker: string): string {
   ].join("\n");
 }
 
+function buildSelectionPrompt(): string {
+  const entries: SessionEntry[] = [
+    messageEntry("old", null, "Old context that Pi compacted"),
+    messageEntry(
+      "kept",
+      "old",
+      "Initial planning notes that were later superseded.",
+    ),
+    {
+      type: "compaction",
+      id: "compaction",
+      parentId: "kept",
+      timestamp: "2026-01-01T00:00:02.000Z",
+      summary: "Deployment target: staging.",
+      firstKeptEntryId: "kept",
+      tokensBefore: 100,
+    },
+    messageEntry(
+      "early",
+      "compaction",
+      "Superseded implementation detail. ".repeat(40),
+    ),
+    {
+      type: "custom_message",
+      id: "ask-result",
+      parentId: "early",
+      timestamp: "2026-01-01T00:00:04.000Z",
+      customType: "portr-ask-result",
+      content: [
+        "# Portr consultation result",
+        "",
+        "Question: Should automatic retries be enabled?",
+        "Destination: prior-consultation (w0:p0)",
+        "Result: Complete answer extracted from the destination session.",
+        "",
+        "## Answer",
+        "",
+        "Keep automatic retries disabled until ambiguous delivery can be ruled out.",
+      ].join("\n"),
+      display: true,
+    },
+    messageEntry(
+      "recent",
+      "ask-result",
+      "Current objective: verify the selected policy before release.",
+    ),
+  ];
+  const context = buildTransferContext(
+    {
+      getEntries: () => entries,
+      getLeafId: () => "recent",
+    },
+    600,
+  );
+
+  assert.ok(context.text.length <= 600);
+  assert.equal(context.truncated, true);
+  assert.match(context.text, /Deployment target: staging/);
+  assert.match(context.text, /Earlier messages omitted due to size/);
+  assert.match(context.text, /Keep automatic retries disabled/);
+  assert.match(context.text, /Current objective: verify the selected policy/);
+  assert.doesNotMatch(context.text, /Superseded implementation detail/);
+  assert.doesNotMatch(context.text, /Prior Portr consultation:/);
+
+  return buildAskPrompt(
+    context.text,
+    "What deployment target and automatic-retry policy does the quoted context specify? Answer in one sentence.",
+  );
+}
+
+function messageEntry(
+  id: string,
+  parentId: string | null,
+  content: string,
+): SessionEntry {
+  return {
+    type: "message",
+    id,
+    parentId,
+    timestamp: "2026-01-01T00:00:01.000Z",
+    message: {
+      role: "user",
+      content,
+      timestamp: 0,
+    },
+  };
+}
+
+function buildBoundaryPrompt(marker: string): string {
+  const lines = Array.from({ length: BOUNDARY_CONTEXT_LINES }, () => "x");
+  const markerIndexes = new Set([
+    0,
+    Math.floor(lines.length / 2),
+    lines.length - 1,
+  ]);
+  lines[0] = `${marker}_BEGIN`;
+  lines[Math.floor(lines.length / 2)] = `${marker}_MIDDLE`;
+  lines[lines.length - 1] = `${marker}_END`;
+
+  const remaining = BOUNDARY_CONTEXT_CHARACTERS - lines.join("\n").length;
+  assert.ok(remaining >= 0, "boundary markers exceed the context limit");
+  const fillerLines = lines.length - markerIndexes.size;
+  const fillerPerLine = Math.floor(remaining / fillerLines);
+  let extraFillerLines = remaining % fillerLines;
+
+  for (const [index, line] of lines.entries()) {
+    if (markerIndexes.has(index)) {
+      continue;
+    }
+    const extra = extraFillerLines > 0 ? 1 : 0;
+    extraFillerLines -= extra;
+    lines[index] = line + "x".repeat(fillerPerLine + extra);
+  }
+
+  const context = lines.join("\n");
+  assert.equal(context.length, BOUNDARY_CONTEXT_CHARACTERS);
+  const prompt = buildAskPrompt(
+    context,
+    `Reply with ${marker} exactly once and nothing else.`,
+  );
+  assert.equal(prompt.length, BOUNDARY_PROMPT_CHARACTERS);
+  assert.equal(Buffer.byteLength(prompt, "utf8"), BOUNDARY_PROMPT_CHARACTERS);
+  return prompt;
+}
+
 function assertScenarioAnswer(
   scenario: IntegrationScenario,
   answer: string,
   marker: string,
 ): void {
   const text = answer.trim();
+  if (scenario === "selection") {
+    assert.match(text, /\bstaging\b/i);
+    assert.match(text, /\bretr(?:y|ies)\b/i);
+    assert.match(text, /\bdisabled\b|\bnot enabled\b|\boff\b/i);
+    return;
+  }
+
   assert.equal(countOccurrences(text, marker), 1);
 
-  if (scenario === "marker") {
+  if (
+    scenario === "marker" ||
+    scenario === "fidelity" ||
+    scenario === "boundary"
+  ) {
     assert.equal(text, marker);
     return;
   }
@@ -272,6 +520,73 @@ function readTimeout(): number {
 
 function countOccurrences(text: string, value: string): number {
   return text.split(value).length - 1;
+}
+
+function assertClaudePromptFidelity(
+  sessionId: string,
+  cwd: string,
+  expectedPrompt: string,
+): void {
+  const transcript = readFileSync(
+    resolveClaudeTranscriptPath(cwd, sessionId),
+    "utf8",
+  );
+  assertClaudeTranscriptPromptFidelity(transcript, expectedPrompt);
+}
+
+function assertClaudeTranscriptPromptFidelity(
+  transcript: string,
+  expectedPrompt: string,
+): void {
+  const candidates = transcript
+    .split("\n")
+    .filter((line) => line.trim().length > 0)
+    .map((line) => JSON.parse(line) as unknown)
+    .filter(isRealClaudeUserRecord);
+
+  assert.equal(
+    candidates.length,
+    1,
+    `expected one real Claude user record, found ${candidates.length}`,
+  );
+  const actualPrompt = candidates[0]?.message.content;
+  assert.ok(
+    typeof actualPrompt === "string",
+    "Claude user prompt was not persisted as a string",
+  );
+
+  const expectedBytes = Buffer.from(expectedPrompt, "utf8");
+  const actualBytes = Buffer.from(actualPrompt, "utf8");
+  assert.ok(
+    expectedBytes.equals(actualBytes),
+    [
+      "Claude user prompt differs from the submitted UTF-8 bytes",
+      `expected length ${expectedBytes.length}, actual length ${actualBytes.length}`,
+      `expected SHA-256 ${sha256(expectedBytes)}, actual SHA-256 ${sha256(actualBytes)}`,
+    ].join("; "),
+  );
+}
+
+function isRealClaudeUserRecord(value: unknown): value is {
+  message: { role: "user"; content: unknown };
+} {
+  return (
+    isRecord(value) &&
+    value.type === "user" &&
+    value.isSidechain !== true &&
+    !Object.hasOwn(value, "toolUseResult") &&
+    !Object.hasOwn(value, "sourceToolAssistantUUID") &&
+    isRecord(value.message) &&
+    value.message.role === "user"
+  );
+}
+
+function sha256(value: NodeJS.TypedArray): string {
+  return createHash("sha256").update(value).digest("hex");
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null;
 }
 
 interface LaunchOptions {
