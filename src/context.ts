@@ -198,6 +198,13 @@ function extractToolPath(argumentsValue: unknown): string | undefined {
   return undefined;
 }
 
+export function quoteReferenceBlock(text: string): string {
+  return sanitizeTransferText(text)
+    .split(/\r?\n/)
+    .map((line) => (line.length === 0 ? ">" : `> ${line}`))
+    .join("\n");
+}
+
 export function sanitizeTransferText(text: string): string {
   return text.replace(DATA_URL_PATTERN, "[base64 data omitted]");
 }

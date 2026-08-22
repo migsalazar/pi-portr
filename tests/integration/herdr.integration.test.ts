@@ -19,6 +19,7 @@ import {
 } from "../../src/pi-target.ts";
 
 type IntegrationTarget = "pi" | "claude";
+type IntegrationScenario = "marker" | "short" | "long" | "tools";
 
 const RUN_MODEL_INTEGRATION = process.env.PORTR_RUN_MODEL_INTEGRATION === "1";
 const DEFAULT_TIMEOUT_MS = 180_000;
@@ -42,14 +43,15 @@ test("live Herdr destination acknowledges one prompt and yields a durable answer
   const flow = readChoice("PORTR_INTEGRATION_FLOW", ["pass", "ask"] as const);
   const timeoutMs = readTimeout();
   const model = readOptionalEnvironment("PORTR_INTEGRATION_MODEL");
+  const scenario = readChoiceWithDefault(
+    "PORTR_INTEGRATION_SCENARIO",
+    ["marker", "short", "long", "tools"] as const,
+    "marker",
+  );
   const operationId = randomUUID();
   const marker = `PORTR_INTEGRATION_${operationId.replaceAll("-", "_")}`;
   const agentName = `portr-integration-${operationId.slice(0, 8)}`;
-  const prompt = [
-    "This is an automated pi-portr integration check.",
-    "Do not modify files or call tools.",
-    `Reply with ${marker} exactly once and no other text.`,
-  ].join("\n");
+  const prompt = buildPrompt(scenario, marker);
   const cwd = process.cwd();
   const herdr = new HerdrClient();
   const originPaneId = await herdr.currentPane();
@@ -72,10 +74,11 @@ test("live Herdr destination acknowledges one prompt and yields a durable answer
     destination.childSession,
     cwd,
   );
-  assert.equal(countOccurrences(answer, marker), 1);
+  assertScenarioAnswer(scenario, answer, marker);
 
   context.diagnostic(`target: ${target}`);
   context.diagnostic(`flow: ${flow}`);
+  context.diagnostic(`scenario: ${scenario}`);
   context.diagnostic(`agent: ${agentName}`);
   context.diagnostic(`pane: ${destination.paneId}`);
   context.diagnostic(`session: ${destination.childSession}`);
@@ -167,6 +170,89 @@ function readChoice<const T extends readonly string[]>(
   assert.ok(value, `${name} is required`);
   assert.ok(allowed.includes(value), `${name} must be ${allowed.join(" or ")}`);
   return value as T[number];
+}
+
+function readChoiceWithDefault<const T extends readonly string[]>(
+  name: string,
+  allowed: T,
+  defaultValue: T[number],
+): T[number] {
+  const value = process.env[name];
+  if (value === undefined || value.trim().length === 0) {
+    return defaultValue;
+  }
+  assert.ok(allowed.includes(value), `${name} must be ${allowed.join(" or ")}`);
+  return value as T[number];
+}
+
+function buildPrompt(scenario: IntegrationScenario, marker: string): string {
+  if (scenario === "short") {
+    return [
+      "This is an automated pi-portr integration check.",
+      "Do not modify files or call tools.",
+      `Reply with one short sentence containing ${marker} exactly once.`,
+    ].join("\n");
+  }
+
+  if (scenario === "long") {
+    return [
+      "This is an automated pi-portr integration check.",
+      "Do not modify files or call tools.",
+      "Write 120 numbered lines of plain text about durable transcript extraction.",
+      `Include ${marker} exactly once, on the final line only.`,
+    ].join("\n");
+  }
+
+  if (scenario === "tools") {
+    return [
+      "This is an automated pi-portr integration check.",
+      "Do not modify files.",
+      "Use read-only file inspection to read package.json in the current directory.",
+      `Reply with the package name, version, and ${marker} exactly once.`,
+    ].join("\n");
+  }
+
+  return [
+    "This is an automated pi-portr integration check.",
+    "Do not modify files or call tools.",
+    `Reply with ${marker} exactly once and no other text.`,
+  ].join("\n");
+}
+
+function assertScenarioAnswer(
+  scenario: IntegrationScenario,
+  answer: string,
+  marker: string,
+): void {
+  const text = answer.trim();
+  assert.equal(countOccurrences(text, marker), 1);
+
+  if (scenario === "marker") {
+    assert.equal(text, marker);
+    return;
+  }
+
+  if (scenario === "short") {
+    assert.equal(text.split("\n").length, 1);
+    assert.ok(text.length <= 500, `short answer has ${text.length} characters`);
+    return;
+  }
+
+  if (scenario === "long") {
+    const lines = text.split("\n").filter((line) => line.trim().length > 0);
+    assert.ok(
+      lines.length >= 100,
+      `long answer has only ${lines.length} lines`,
+    );
+    assert.ok(
+      lines.at(-1)?.includes(marker),
+      "marker is not on the final line",
+    );
+    return;
+  }
+
+  assert.match(text, /\bpi-portr\b/);
+  assert.match(text, /\b0\.1\.0\b/);
 }
 
 function readOptionalEnvironment(name: string): string | undefined {

@@ -280,16 +280,24 @@ export class AsyncAskCoordinator {
   }
 
   reconcile(ctx: ExtensionContext): void {
-    const generation = ++this.generation;
-    this.active.clear();
     const originSession = ctx.sessionManager.getSessionFile();
+    if (originSession === undefined) {
+      if (this.originSession !== undefined) {
+        this.generation += 1;
+        this.active.clear();
+        this.deliveryPending.clear();
+        this.originSession = undefined;
+      }
+      return;
+    }
+
     if (originSession !== this.originSession) {
+      this.generation += 1;
+      this.active.clear();
       this.deliveryPending.clear();
       this.originSession = originSession;
     }
-    if (originSession === undefined) {
-      return;
-    }
+    const generation = this.generation;
 
     const entries = ctx.sessionManager.getBranch();
     const operations = restoreAsyncAskOperations(entries);
@@ -347,6 +355,13 @@ export class AsyncAskCoordinator {
     prompt: string,
     ctx: ExtensionContext,
   ): void {
+    const originSession = ctx.sessionManager.getSessionFile();
+    if (originSession !== this.originSession) {
+      this.generation += 1;
+      this.active.clear();
+      this.deliveryPending.clear();
+      this.originSession = originSession;
+    }
     this.monitor(operation, ctx, this.generation, prompt);
   }
 
@@ -446,7 +461,7 @@ export class AsyncAskCoordinator {
       };
     }
 
-    if (!this.isCurrent(operation, ctx, generation)) {
+    if (!this.isCurrentWorkingOperation(operation, ctx, generation)) {
       return;
     }
 
@@ -590,6 +605,19 @@ export class AsyncAskCoordinator {
 
   private persist(operation: AsyncAskOperation): void {
     this.pi.appendEntry(ASYNC_ASK_OPERATION_ENTRY, operation);
+  }
+
+  private isCurrentWorkingOperation(
+    operation: AsyncAskOperation,
+    ctx: ExtensionContext,
+    generation: number,
+  ): boolean {
+    return (
+      this.isCurrent(operation, ctx, generation) &&
+      restoreAsyncAskOperations(ctx.sessionManager.getBranch()).get(
+        operation.operationId,
+      )?.status === "working"
+    );
   }
 
   private isCurrent(
