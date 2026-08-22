@@ -24,11 +24,10 @@ Install [Herdr](https://herdr.dev), enter a Herdr-managed pane, and start Pi fro
 
 ```text
 /portr-pass <pi|claude> [--model <model>] <goal>
-/portr-ask <pi|claude> [--model <model>] [--preview] <question>
-/portr-ask <pi|claude> [--model <model>] [--preview] --wait <question>
+/portr-ask <pi|claude> [--model <model>] [--preview] [--wait] <question>
 ```
 
-Pass builds a bounded semantic handoff from the active Pi context, opens it for review, and starts a visible destination through Herdr after approval. Saving the editor confirms delivery; cancelling creates no destination. After delivery, Portr focuses the destination only if the origin pane is still focused, so switching elsewhere during launch is respected.
+Pass builds a bounded semantic handoff from the active Pi context, opens it for review, and starts a visible destination through Herdr after approval. Saving the editor approves delivery; cancelling creates no destination. After delivery, Portr focuses the destination only if the origin pane is still focused, so switching elsewhere during launch is respected.
 
 Ask starts Pi with only `read`, `grep`, `find`, and `ls`, or Claude with only `Read`, `Grep`, and `Glob`; Claude MCP tools are denied and permission prompts are auto-denied. By default ask returns after dispatch, persists the operation in the origin session, and later delivers one bounded result as a follow-up. Extension reloads and origin-session restarts reconcile unfinished operations without resubmitting the question. Add `--wait` for the blocking variant.
 
