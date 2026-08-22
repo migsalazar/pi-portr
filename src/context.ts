@@ -6,11 +6,10 @@ import { ASYNC_ASK_RESULT_MESSAGE } from "./state.ts";
 
 export const DEFAULT_CONTEXT_CHARACTER_LIMIT = 60_000;
 
-const OMITTED_CONTEXT_MARKER = "[Earlier context omitted due to size]";
 const OMITTED_MESSAGES_MARKER = "[Earlier messages omitted due to size]";
 const OMITTED_COMPACTION_MIDDLE_MARKER =
   "[Middle of compacted context omitted due to size]";
-const DATA_URL_PATTERN = /data:[^;\s]+;base64,[a-zA-Z0-9+/=_-]+/g;
+const DATA_URL_PATTERN = /data:[^,\s]*;base64,[a-zA-Z0-9+/=_%-]+/gi;
 
 type ContextSessionManager = Pick<SessionManager, "getEntries" | "getLeafId">;
 
@@ -26,33 +25,6 @@ export function boundText(text: string, maxCharacters: number): BoundedText {
   return {
     text: text.slice(0, maxCharacters),
     truncated: text.length > maxCharacters,
-    originalLength: text.length,
-  };
-}
-
-export function boundTextFromEnd(
-  text: string,
-  maxCharacters: number,
-): BoundedText {
-  validateLimit(maxCharacters);
-
-  if (text.length <= maxCharacters) {
-    return {
-      text,
-      truncated: false,
-      originalLength: text.length,
-    };
-  }
-
-  const marker = `${OMITTED_CONTEXT_MARKER}\n\n`;
-  const bounded =
-    marker.length < maxCharacters
-      ? marker + text.slice(-(maxCharacters - marker.length))
-      : text.slice(-maxCharacters);
-
-  return {
-    text: bounded,
-    truncated: true,
     originalLength: text.length,
   };
 }

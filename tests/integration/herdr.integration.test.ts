@@ -3,7 +3,10 @@ import { createHash, randomUUID } from "node:crypto";
 import { readFileSync } from "node:fs";
 import test from "node:test";
 import type { SessionEntry } from "@earendil-works/pi-coding-agent";
-import { retryAskResultExtraction } from "../../src/async-ask.ts";
+import {
+  AskLaunchError,
+  retryAskResultExtraction,
+} from "../../src/async-ask.ts";
 import {
   extractClaudeSessionAnswer,
   resolveClaudeSessionReference,
@@ -80,6 +83,33 @@ test("Claude boundary prompt reaches the current context and prompt limits", () 
   assert.match(prompt, new RegExp(`${marker}_END`));
 });
 
+test("Ask failure diagnostics preserve available destination references", () => {
+  const diagnostics: string[] = [];
+  const error = new AskLaunchError(
+    "prompt_wait",
+    "portr-integration-test",
+    "w1:p2",
+    new Error("destination blocked"),
+    {
+      status: "blocked",
+      paneId: "w1:p2",
+      session: {
+        agent: "claude",
+        kind: "id",
+        value: "12345678-1234-1234-1234-123456789abc",
+      },
+    },
+  );
+
+  diagnoseAskLaunchError((message) => diagnostics.push(message), error);
+
+  assert.deepEqual(diagnostics, [
+    "pane: w1:p2",
+    "session: 12345678-1234-1234-1234-123456789abc",
+    "destination pane intentionally preserved",
+  ]);
+});
+
 test("live Herdr destination acknowledges one prompt and yields a durable answer", {
   skip: RUN_MODEL_INTEGRATION
     ? false
@@ -136,24 +166,31 @@ test("live Herdr destination acknowledges one prompt and yields a durable answer
     timeoutMs,
     ...(model === undefined ? {} : { model }),
   };
-  const destination =
-    flow === "pass"
-      ? await runPassFlow(target, herdr, launchOptions)
-      : await runAskFlow(target, herdr, launchOptions);
-
   context.diagnostic(`target: ${target}`);
   context.diagnostic(`flow: ${flow}`);
   context.diagnostic(`scenario: ${scenario}`);
   context.diagnostic(`marker: ${marker}`);
   context.diagnostic(`agent: ${agentName}`);
-  context.diagnostic(`pane: ${destination.paneId}`);
-  context.diagnostic(`session: ${destination.childSession}`);
   context.diagnostic(
     `prompt UTF-8 bytes: ${Buffer.byteLength(prompt, "utf8")}`,
   );
   context.diagnostic(
     `prompt SHA-256: ${createHash("sha256").update(prompt, "utf8").digest("hex")}`,
   );
+
+  let destination: SettledDestination;
+  try {
+    destination =
+      flow === "pass"
+        ? await runPassFlow(target, herdr, launchOptions)
+        : await runAskFlow(target, herdr, launchOptions);
+  } catch (error) {
+    diagnoseAskLaunchError((message) => context.diagnostic(message), error);
+    throw error;
+  }
+
+  context.diagnostic(`pane: ${destination.paneId}`);
+  context.diagnostic(`session: ${destination.childSession}`);
   context.diagnostic("destination pane intentionally preserved");
 
   const answer = await extractAnswerWithRetry(
@@ -170,6 +207,21 @@ test("live Herdr destination acknowledges one prompt and yields a durable answer
   }
   assertScenarioAnswer(scenario, answer, marker);
 });
+
+function diagnoseAskLaunchError(
+  diagnostic: (message: string) => void,
+  error: unknown,
+): void {
+  if (!(error instanceof AskLaunchError)) {
+    return;
+  }
+
+  diagnostic(`pane: ${error.paneId ?? "unavailable"}`);
+  diagnostic(`session: ${error.childSession ?? "unavailable"}`);
+  if (error.paneId !== undefined) {
+    diagnostic("destination pane intentionally preserved");
+  }
+}
 
 async function runPassFlow(
   target: IntegrationTarget,

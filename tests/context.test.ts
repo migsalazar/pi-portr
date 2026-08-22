@@ -7,7 +7,6 @@ import {
 } from "@earendil-works/pi-coding-agent";
 import {
   boundText,
-  boundTextFromEnd,
   buildTransferContext,
   serializeTransferMessages,
 } from "../src/context.ts";
@@ -31,17 +30,9 @@ test("boundText reports deterministic truncation", () => {
   });
 });
 
-test("boundTextFromEnd keeps recent context and reports omission", () => {
-  assert.deepEqual(boundTextFromEnd("0123456789", 5), {
-    text: "56789",
-    truncated: true,
-    originalLength: 10,
-  });
-});
-
 test("text bounds reject invalid limits", () => {
   assert.throws(() => boundText("context", 0), RangeError);
-  assert.throws(() => boundTextFromEnd("context", 1.5), RangeError);
+  assert.throws(() => boundText("context", 1.5), RangeError);
 });
 
 test("transfer serialization excludes thinking, images, and tool output", () => {
@@ -96,6 +87,26 @@ test("transfer serialization removes textual data URLs", () => {
   ]);
 
   assert.equal(serialized, "User: Image: [base64 data omitted]");
+});
+
+test("transfer serialization removes parameterized and uppercase data URLs", () => {
+  const serialized = serializeTransferMessages([
+    {
+      role: "user",
+      content: [
+        "Parameterized: data:image/png;charset=utf-8;base64,QUJD",
+        "Uppercase: DATA:IMAGE/PNG;BASE64,REVG",
+      ].join("\n"),
+    },
+  ]);
+
+  assert.equal(
+    serialized,
+    [
+      "User: Parameterized: [base64 data omitted]",
+      "Uppercase: [base64 data omitted]",
+    ].join("\n"),
+  );
 });
 
 test("transfer truncation does not retain orphaned tool results", () => {
