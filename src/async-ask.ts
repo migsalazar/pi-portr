@@ -461,7 +461,7 @@ export class AsyncAskCoordinator {
       };
     }
 
-    if (!this.isCurrent(operation, ctx, generation)) {
+    if (!this.isCurrentWorkingOperation(operation, ctx, generation)) {
       return;
     }
 
@@ -605,6 +605,19 @@ export class AsyncAskCoordinator {
 
   private persist(operation: AsyncAskOperation): void {
     this.pi.appendEntry(ASYNC_ASK_OPERATION_ENTRY, operation);
+  }
+
+  private isCurrentWorkingOperation(
+    operation: AsyncAskOperation,
+    ctx: ExtensionContext,
+    generation: number,
+  ): boolean {
+    return (
+      this.isCurrent(operation, ctx, generation) &&
+      restoreAsyncAskOperations(ctx.sessionManager.getBranch()).get(
+        operation.operationId,
+      )?.status === "working"
+    );
   }
 
   private isCurrent(

@@ -64,7 +64,7 @@ Destination panes and sessions are intentionally preserved after completion and 
 
 - Node.js `>=22.19.0`
 - Pi `>=0.84.0`
-- Herdr `>=0.8.0`
+- Herdr `>=0.8.2`
 - Claude Code when using the Claude destination
 
 The current Claude integration was validated with Claude Code `2.1.238`. Result extraction reads Claude Code's local JSONL transcript and validates durable completion markers strictly. That schema is internal and may change between Claude Code versions; incompatible schema drift fails explicitly while preserving pane and session references.

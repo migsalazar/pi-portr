@@ -506,7 +506,7 @@ test("AsyncAskCoordinator completes a fresh prompt and delivers a follow-up", as
     createHerdr: () => new HerdrClient(runner, { HERDR_ENV: "1" }),
     extractAnswer: () => "Recovered answer",
   });
-  coordinator.reconcile(ctx);
+  entries.push(operationEntry("working", operation));
 
   coordinator.monitorFresh(operation, "Question prompt", ctx);
   await waitFor(() => sent.length === 1);
@@ -532,7 +532,7 @@ test("AsyncAskCoordinator completes a fresh prompt and delivers a follow-up", as
   );
 });
 
-test("AsyncAskCoordinator keeps one fresh monitor across session tree reconciliations", async () => {
+test("AsyncAskCoordinator keeps one fresh monitor across same-branch reconciliations", async () => {
   const operation = workingOperation();
   const entries: SessionEntry[] = [operationEntry("working", operation)];
   const sent: Array<{ message: unknown; options: unknown }> = [];
@@ -576,7 +576,7 @@ test("AsyncAskCoordinator keeps one fresh monitor across session tree reconcilia
   );
 });
 
-test("AsyncAskCoordinator keeps one recovery monitor across session tree reconciliations", async () => {
+test("AsyncAskCoordinator keeps one recovery monitor across same-branch reconciliations", async () => {
   const operation = workingOperation();
   const entries: SessionEntry[] = [operationEntry("working", operation)];
   const sent: Array<{ message: unknown; options: unknown }> = [];
@@ -650,7 +650,7 @@ test("AsyncAskCoordinator completes a fresh Claude prompt with durable target co
       return "Claude answer";
     },
   });
-  coordinator.reconcile(ctx);
+  entries.push(operationEntry("working", operation));
 
   coordinator.monitorFresh(operation, "Question prompt", ctx);
   await waitFor(() => sent.length === 1);
@@ -732,7 +732,8 @@ test("AsyncAskCoordinator ignores operations from another origin", async () => {
 });
 
 test("AsyncAskCoordinator does not deliver after the origin changes in flight", async () => {
-  const entries: SessionEntry[] = [];
+  const operation = workingOperation();
+  const entries: SessionEntry[] = [operationEntry("working", operation)];
   const sent: Array<{ message: unknown; options: unknown }> = [];
   let currentOrigin = "/tmp/origin.jsonl";
   let settle:
@@ -747,12 +748,38 @@ test("AsyncAskCoordinator does not deliver after the origin changes in flight", 
     extractAnswer: () => "Must stay with the original session",
   });
   const ctx = runtimeContext(entries, () => currentOrigin);
-  const operation = workingOperation();
-  coordinator.reconcile(ctx);
 
   coordinator.monitorFresh(operation, "Question prompt", ctx);
   await waitFor(() => settle !== undefined);
   currentOrigin = "/tmp/different-origin.jsonl";
+  settle?.(agentOutput("idle"));
+  await new Promise((resolve) => setTimeout(resolve, 10));
+
+  assert.equal(sent.length, 0);
+  assert.equal(entries.length, 1);
+});
+
+test("AsyncAskCoordinator does not deliver after the active branch abandons an operation", async () => {
+  const operation = workingOperation();
+  const entries: SessionEntry[] = [operationEntry("working", operation)];
+  const sent: Array<{ message: unknown; options: unknown }> = [];
+  let settle:
+    | ((output: { stdout: string; stderr: string }) => void)
+    | undefined;
+  const runner: HerdrCommandRunner = () =>
+    new Promise((resolve) => {
+      settle = resolve;
+    });
+  const coordinator = new AsyncAskCoordinator(runtimeApi(entries, sent), {
+    createHerdr: () => new HerdrClient(runner, { HERDR_ENV: "1" }),
+    extractAnswer: () => "Must stay with the originating branch",
+  });
+  const ctx = runtimeContext(entries);
+
+  coordinator.monitorFresh(operation, "Question prompt", ctx);
+  await waitFor(() => settle !== undefined);
+  entries.length = 0;
+  coordinator.reconcile(ctx);
   settle?.(agentOutput("idle"));
   await new Promise((resolve) => setTimeout(resolve, 10));
 
