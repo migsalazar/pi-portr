@@ -170,10 +170,12 @@ function boundTransferMessagesFromEnd(
   maxCharacters: number,
 ): string {
   const sections = messages.flatMap((message) => {
-    const section = serializeMessage(message);
-    return section === undefined ? [] : [section];
+    const text = serializeMessage(message);
+    return text === undefined || !isRecord(message)
+      ? []
+      : [{ role: message.role, text }];
   });
-  const serialized = sections.join("\n\n");
+  const serialized = sections.map((section) => section.text).join("\n\n");
   if (serialized.length <= maxCharacters) {
     return serialized;
   }
@@ -184,10 +186,12 @@ function boundTransferMessagesFromEnd(
     return "";
   }
   if (marker.length >= maxCharacters) {
-    return latest.slice(-maxCharacters);
+    return latest.role === "toolResult"
+      ? OMITTED_MESSAGES_MARKER.slice(0, maxCharacters)
+      : latest.text.slice(-maxCharacters);
   }
 
-  const selected: string[] = [];
+  const selected: typeof sections = [];
   let usedCharacters = marker.length;
   for (let index = sections.length - 1; index >= 0; index -= 1) {
     const section = sections[index];
@@ -195,17 +199,28 @@ function boundTransferMessagesFromEnd(
       continue;
     }
     const separatorCharacters = selected.length === 0 ? 0 : 2;
-    if (usedCharacters + separatorCharacters + section.length > maxCharacters) {
+    if (
+      usedCharacters + separatorCharacters + section.text.length >
+      maxCharacters
+    ) {
       if (selected.length === 0) {
-        return marker + section.slice(-(maxCharacters - marker.length));
+        return section.role === "toolResult"
+          ? OMITTED_MESSAGES_MARKER
+          : marker + section.text.slice(-(maxCharacters - marker.length));
       }
       break;
     }
     selected.unshift(section);
-    usedCharacters += separatorCharacters + section.length;
+    usedCharacters += separatorCharacters + section.text.length;
   }
 
-  return marker + selected.join("\n\n");
+  while (selected[0]?.role === "toolResult") {
+    selected.shift();
+  }
+
+  return selected.length === 0
+    ? OMITTED_MESSAGES_MARKER
+    : marker + selected.map((section) => section.text).join("\n\n");
 }
 
 function boundOversizedCompaction(

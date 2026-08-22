@@ -13,6 +13,8 @@ import {
 } from "../src/context.ts";
 import { buildAskPrompt } from "../src/commands/ask.ts";
 
+type SessionMessage = Extract<SessionEntry, { type: "message" }>["message"];
+
 test("boundText preserves content that fits the limit", () => {
   assert.deepEqual(boundText("context", 10), {
     text: "context",
@@ -94,6 +96,75 @@ test("transfer serialization removes textual data URLs", () => {
   ]);
 
   assert.equal(serialized, "User: Image: [base64 data omitted]");
+});
+
+test("transfer truncation does not retain orphaned tool results", () => {
+  const entries: SessionEntry[] = [
+    messageEntry("old", null, "OLD ".repeat(200)),
+    agentMessageEntry("assistant", "old", {
+      role: "assistant",
+      content: [
+        { type: "text", text: "DETAIL ".repeat(30) },
+        {
+          type: "toolCall",
+          id: "call-1",
+          name: "read",
+          arguments: { path: "src/index.ts" },
+        },
+      ],
+      api: "anthropic",
+      provider: "anthropic",
+      model: "test",
+      usage: {
+        input: 0,
+        output: 0,
+        cacheRead: 0,
+        cacheWrite: 0,
+        totalTokens: 0,
+        cost: {
+          input: 0,
+          output: 0,
+          cacheRead: 0,
+          cacheWrite: 0,
+          total: 0,
+        },
+      },
+      stopReason: "toolUse",
+      timestamp: Date.parse("2026-01-01T00:00:01.000Z"),
+    }),
+    agentMessageEntry("tool-result", "assistant", {
+      role: "toolResult",
+      toolCallId: "call-1",
+      toolName: "read",
+      content: [{ type: "text", text: "omitted production output" }],
+      isError: false,
+      timestamp: Date.parse("2026-01-01T00:00:02.000Z"),
+    }),
+    messageEntry("recent", "tool-result", "RECENT-QUESTION"),
+  ];
+  const sessionManager = contextSession(entries, "recent");
+
+  const orphanBound = buildTransferContext(sessionManager, 120);
+  assert.equal(orphanBound.truncated, true);
+  assert.ok(orphanBound.text.length <= 120);
+  assert.match(orphanBound.text, /Earlier messages omitted due to size/);
+  assert.match(orphanBound.text, /RECENT-QUESTION/);
+  assert.doesNotMatch(orphanBound.text, /Tool read/);
+  assert.doesNotMatch(orphanBound.text, /Assistant:/);
+
+  const latestToolBound = buildTransferContext(
+    contextSession(entries.slice(0, -1), "tool-result"),
+    120,
+  );
+  assert.equal(latestToolBound.text, "[Earlier messages omitted due to size]");
+  assert.equal(latestToolBound.truncated, true);
+
+  const pairBound = buildTransferContext(sessionManager, 400);
+  assert.equal(pairBound.truncated, true);
+  assert.ok(pairBound.text.length <= 400);
+  assert.match(pairBound.text, /Assistant: DETAIL/);
+  assert.match(pairBound.text, /Tool read: completed/);
+  assert.match(pairBound.text, /RECENT-QUESTION/);
 });
 
 test("buildTransferContext follows Pi compaction context", () => {
@@ -313,15 +384,23 @@ function messageEntry(
   parentId: string | null,
   text: string,
 ): SessionEntry {
+  return agentMessageEntry(id, parentId, {
+    role: "user",
+    content: text,
+    timestamp: Date.parse("2026-01-01T00:00:00.000Z"),
+  });
+}
+
+function agentMessageEntry(
+  id: string,
+  parentId: string | null,
+  message: SessionMessage,
+): SessionEntry {
   return {
     type: "message",
     id,
     parentId,
     timestamp: "2026-01-01T00:00:00.000Z",
-    message: {
-      role: "user",
-      content: text,
-      timestamp: Date.parse("2026-01-01T00:00:00.000Z"),
-    },
+    message,
   };
 }
