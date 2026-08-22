@@ -28,7 +28,7 @@ pi install npm:pi-portr@0.1.0
 
 Pi packages execute with full user permissions. Review the source before installation.
 
-`pi-portr` must run in a Pi session inside a Herdr-managed pane.
+Install [Herdr](https://herdr.dev), enter a Herdr-managed pane, and start Pi from inside that pane. Starting Pi outside Herdr leaves Portr without the pane context it needs.
 
 ## Usage
 
@@ -67,7 +67,7 @@ Destination panes and sessions are intentionally preserved after completion and 
 - Herdr `>=0.8.2`
 - Claude Code when using the Claude destination
 
-The current Claude integration was validated with Claude Code `2.1.238`. Result extraction reads Claude Code's local JSONL transcript and validates durable completion markers strictly. That schema is internal and may change between Claude Code versions; incompatible schema drift fails explicitly while preserving pane and session references.
+The current Claude integration was validated with Claude Code `2.1.239`. Result extraction reads Claude Code's local JSONL transcript and validates durable completion markers strictly. That schema is internal and may change between Claude Code versions; incompatible schema drift fails explicitly while preserving pane and session references.
 
 Ask restrictions are harness-level policy, not an operating-system sandbox.
 
