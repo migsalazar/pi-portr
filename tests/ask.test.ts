@@ -503,7 +503,7 @@ test("AsyncAskCoordinator completes a fresh prompt and delivers a follow-up", as
   const api = runtimeApi(entries, sent);
   const ctx = runtimeContext(entries);
   const coordinator = new AsyncAskCoordinator(api, {
-    createHerdr: () => new HerdrClient(runner, { HERDR_ENV: "1" }),
+    createOrchestrator: () => new HerdrClient(runner, { HERDR_ENV: "1" }),
     extractAnswer: () => "Recovered answer",
   });
   entries.push(operationEntry("working", operation));
@@ -552,7 +552,7 @@ test("AsyncAskCoordinator keeps one fresh monitor across same-branch reconciliat
     );
   };
   const coordinator = new AsyncAskCoordinator(runtimeApi(entries, sent), {
-    createHerdr: () => new HerdrClient(runner, { HERDR_ENV: "1" }),
+    createOrchestrator: () => new HerdrClient(runner, { HERDR_ENV: "1" }),
     extractAnswer: () => "Recovered answer",
   });
   const ctx = runtimeContext(entries);
@@ -596,7 +596,7 @@ test("AsyncAskCoordinator keeps one recovery monitor across same-branch reconcil
     );
   };
   const coordinator = new AsyncAskCoordinator(runtimeApi(entries, sent), {
-    createHerdr: () => new HerdrClient(runner, { HERDR_ENV: "1" }),
+    createOrchestrator: () => new HerdrClient(runner, { HERDR_ENV: "1" }),
     extractAnswer: () => "Recovered answer",
   });
   const ctx = runtimeContext(entries);
@@ -638,7 +638,7 @@ test("AsyncAskCoordinator completes a fresh Claude prompt with durable target co
   const api = runtimeApi(entries, sent);
   const ctx = runtimeContext(entries);
   const coordinator = new AsyncAskCoordinator(api, {
-    createHerdr: () => new HerdrClient(runner, { HERDR_ENV: "1" }),
+    createOrchestrator: () => new HerdrClient(runner, { HERDR_ENV: "1" }),
     resultRetryTimeoutMs: 100,
     resultRetryIntervalMs: 0,
     extractAnswer: (...args) => {
@@ -688,7 +688,7 @@ test("AsyncAskCoordinator recovers without resubmitting or duplicating", async (
   const api = runtimeApi(entries, sent);
   const ctx = runtimeContext(entries);
   const dependencies = {
-    createHerdr: () => new HerdrClient(runner, { HERDR_ENV: "1" }),
+    createOrchestrator: () => new HerdrClient(runner, { HERDR_ENV: "1" }),
     extractAnswer: () => "Recovered answer",
   };
 
@@ -719,7 +719,7 @@ test("AsyncAskCoordinator ignores operations from another origin", async () => {
     return agentOutput("idle");
   };
   const coordinator = new AsyncAskCoordinator(runtimeApi(entries, sent), {
-    createHerdr: () => new HerdrClient(runner, { HERDR_ENV: "1" }),
+    createOrchestrator: () => new HerdrClient(runner, { HERDR_ENV: "1" }),
     extractAnswer: () => "Wrong-origin answer",
   });
 
@@ -744,7 +744,7 @@ test("AsyncAskCoordinator does not deliver after the origin changes in flight", 
       settle = resolve;
     });
   const coordinator = new AsyncAskCoordinator(runtimeApi(entries, sent), {
-    createHerdr: () => new HerdrClient(runner, { HERDR_ENV: "1" }),
+    createOrchestrator: () => new HerdrClient(runner, { HERDR_ENV: "1" }),
     extractAnswer: () => "Must stay with the original session",
   });
   const ctx = runtimeContext(entries, () => currentOrigin);
@@ -771,7 +771,7 @@ test("AsyncAskCoordinator does not deliver after the active branch abandons an o
       settle = resolve;
     });
   const coordinator = new AsyncAskCoordinator(runtimeApi(entries, sent), {
-    createHerdr: () => new HerdrClient(runner, { HERDR_ENV: "1" }),
+    createOrchestrator: () => new HerdrClient(runner, { HERDR_ENV: "1" }),
     extractAnswer: () => "Must stay with the originating branch",
   });
   const ctx = runtimeContext(entries);
@@ -800,7 +800,7 @@ test("AsyncAskCoordinator persists an expired working recovery as a timeout", as
     return agentOutput("working");
   };
   const coordinator = new AsyncAskCoordinator(runtimeApi(entries, sent), {
-    createHerdr: () => new HerdrClient(runner, { HERDR_ENV: "1" }),
+    createOrchestrator: () => new HerdrClient(runner, { HERDR_ENV: "1" }),
     extractAnswer: () => "must not extract",
   });
 
@@ -836,7 +836,7 @@ test("AsyncAskCoordinator fails an expired pre-submit recovery without resubmitt
     return agentOutput("idle");
   };
   const coordinator = new AsyncAskCoordinator(runtimeApi(entries, sent), {
-    createHerdr: () => new HerdrClient(runner, { HERDR_ENV: "1" }),
+    createOrchestrator: () => new HerdrClient(runner, { HERDR_ENV: "1" }),
     resultRetryTimeoutMs: 0,
     extractAnswer: () => {
       throw new AskResultError("prompt has no durable answer");
@@ -866,7 +866,7 @@ test("AsyncAskCoordinator preserves destination references when recovery is bloc
   const sent: Array<{ message: unknown; options: unknown }> = [];
   const runner: HerdrCommandRunner = async () => agentOutput("blocked");
   const coordinator = new AsyncAskCoordinator(runtimeApi(entries, sent), {
-    createHerdr: () => new HerdrClient(runner, { HERDR_ENV: "1" }),
+    createOrchestrator: () => new HerdrClient(runner, { HERDR_ENV: "1" }),
     extractAnswer: () => "must not extract",
   });
 
@@ -894,7 +894,7 @@ test("AsyncAskCoordinator recovers completed output after its deadline", async (
   const sent: Array<{ message: unknown; options: unknown }> = [];
   const runner: HerdrCommandRunner = async () => agentOutput("idle");
   const coordinator = new AsyncAskCoordinator(runtimeApi(entries, sent), {
-    createHerdr: () => new HerdrClient(runner, { HERDR_ENV: "1" }),
+    createOrchestrator: () => new HerdrClient(runner, { HERDR_ENV: "1" }),
     extractAnswer: () => "Already completed answer",
   });
   const ctx = runtimeContext(entries);
@@ -926,7 +926,7 @@ test("AsyncAskCoordinator waits through a recovered pre-prompt idle state", asyn
     return agentOutput(waitsForWorking ? "working" : "idle");
   };
   const coordinator = new AsyncAskCoordinator(runtimeApi(entries, sent), {
-    createHerdr: () => new HerdrClient(runner, { HERDR_ENV: "1" }),
+    createOrchestrator: () => new HerdrClient(runner, { HERDR_ENV: "1" }),
     resultRetryTimeoutMs: 0,
     extractAnswer: () => {
       extractionCount += 1;

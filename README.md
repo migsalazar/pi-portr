@@ -2,7 +2,7 @@
 
 Hand off work and ask questions across visible, independent agent sessions.
 
-`pi-portr` is a Pi extension with two flows: `pass` moves a reviewed continuation to another visible session, and `ask` consults another visible session and brings back one bounded answer. The implementation uses concrete adapters for Herdr orchestration and Pi or Claude destinations while keeping context transfer explicit, bounded, and reviewable.
+`pi-portr` is a Pi extension for coordinating work across visible, independent agent sessions. It currently uses Herdr to orchestrate Pi and Claude destinations while keeping context transfer explicit, bounded, and reviewable.
 
 > Status: MVP implemented and validated for the `0.1.0` release.
 

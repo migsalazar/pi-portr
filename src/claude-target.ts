@@ -3,7 +3,7 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import { AskResultError } from "./ask-result.ts";
 import { sanitizeTransferText } from "./context.ts";
-import type { HerdrAgentSession } from "./herdr.ts";
+import type { AgentSessionReference } from "./orchestrator.ts";
 
 export const CLAUDE_READ_ONLY_TOOLS = ["Read", "Grep", "Glob"] as const;
 export const MAX_CLAUDE_TRANSCRIPT_BYTES = 64 * 1024 * 1024;
@@ -39,7 +39,7 @@ export function buildClaudeLaunchArgs(options: ClaudeLaunchOptions): string[] {
 }
 
 export function resolveClaudeSessionReference(
-  session: HerdrAgentSession | undefined,
+  session: AgentSessionReference | undefined,
 ): string | undefined {
   return session?.agent === "claude" ? session.value : undefined;
 }

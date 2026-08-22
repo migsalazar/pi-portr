@@ -10,12 +10,12 @@ import {
 } from "./claude-target.ts";
 import { boundText, sanitizeTransferText } from "./context.ts";
 import {
-  type HerdrAgent,
-  type HerdrAgentSession,
-  type HerdrAgentStatus,
-  HerdrClient,
-  HerdrCommandError,
-} from "./herdr.ts";
+  type AgentSessionReference,
+  type AgentState,
+  type AgentStatus,
+  type Orchestrator,
+  OrchestrationError,
+} from "./orchestrator.ts";
 import {
   extractPiSessionAnswer,
   resolvePiSessionReference,
@@ -112,7 +112,7 @@ export class AskLaunchError extends Error {
   readonly stage: AskLaunchStage;
   readonly agentName: string;
   readonly paneId: string | undefined;
-  readonly status: HerdrAgentStatus | undefined;
+  readonly status: AgentStatus | undefined;
   readonly childSession: string | undefined;
 
   constructor(
@@ -120,7 +120,7 @@ export class AskLaunchError extends Error {
     agentName: string,
     paneId: string | undefined,
     cause: unknown,
-    agent?: HerdrAgent,
+    agent?: AgentState,
   ) {
     const resolvedPaneId = agent?.paneId ?? paneId;
     const childSession = agent?.session?.value;
@@ -149,7 +149,7 @@ export class AskLaunchError extends Error {
 export function resolveSettledAskAgent(
   target: AskTarget,
   destination: AskDestination,
-  agent: HerdrAgent,
+  agent: AgentState,
 ): AskLaunchResult {
   if (agent.status === "blocked") {
     throw new AskLaunchError(
@@ -175,7 +175,7 @@ export function resolveSettledAskAgent(
       "prompt_wait",
       destination.agentName,
       destination.paneId,
-      new Error(`Herdr did not provide the child ${target} session reference`),
+      new Error(`destination did not expose its ${target} session reference`),
       agent,
     );
   }
@@ -244,24 +244,25 @@ export function buildAskResultMessage(options: {
 }
 
 export interface AsyncAskCoordinatorDependencies {
-  createHerdr(): HerdrClient;
-  extractAnswer(target: AskTarget, childSession: string, cwd?: string): string;
+  createOrchestrator(): Orchestrator;
+  extractAnswer?(target: AskTarget, childSession: string, cwd?: string): string;
   resultRetryTimeoutMs?: number;
   resultRetryIntervalMs?: number;
 }
 
-const DEFAULT_ASYNC_ASK_DEPENDENCIES: AsyncAskCoordinatorDependencies = {
-  createHerdr: () => new HerdrClient(),
-  extractAnswer: (target, childSession, cwd) => {
-    if (target === "pi") {
-      return extractPiSessionAnswer(childSession);
-    }
-    if (cwd === undefined) {
-      throw new AskResultError("Claude ask operation did not preserve its cwd");
-    }
-    return extractClaudeSessionAnswer(childSession, cwd);
-  },
-};
+function defaultExtractAnswer(
+  target: AskTarget,
+  childSession: string,
+  cwd?: string,
+): string {
+  if (target === "pi") {
+    return extractPiSessionAnswer(childSession);
+  }
+  if (cwd === undefined) {
+    throw new AskResultError("Claude ask operation did not preserve its cwd");
+  }
+  return extractClaudeSessionAnswer(childSession, cwd);
+}
 
 export class AsyncAskCoordinator {
   private generation = 0;
@@ -271,10 +272,7 @@ export class AsyncAskCoordinator {
   private readonly pi: ExtensionAPI;
   private readonly dependencies: AsyncAskCoordinatorDependencies;
 
-  constructor(
-    pi: ExtensionAPI,
-    dependencies: AsyncAskCoordinatorDependencies = DEFAULT_ASYNC_ASK_DEPENDENCIES,
-  ) {
+  constructor(pi: ExtensionAPI, dependencies: AsyncAskCoordinatorDependencies) {
     this.pi = pi;
     this.dependencies = dependencies;
   }
@@ -395,18 +393,15 @@ export class AsyncAskCoordinator {
     try {
       const timeoutMs = operation.deadlineAt - Date.now();
       if (prompt !== undefined && timeoutMs <= 0) {
-        throw new HerdrCommandError(
-          "agent wait",
-          "consultation deadline elapsed",
-          "",
-          { code: "timeout" },
-        );
+        throw new OrchestrationError("consultation deadline elapsed", {
+          code: "timeout",
+        });
       }
 
-      const herdr = this.dependencies.createHerdr();
+      const orchestrator = this.dependencies.createOrchestrator();
       const recovered =
         prompt === undefined
-          ? await this.recoverAsk(operation, herdr, (session) => {
+          ? await this.recoverAsk(operation, orchestrator, (session) => {
               childSession = session;
             })
           : undefined;
@@ -415,7 +410,7 @@ export class AsyncAskCoordinator {
         resolveSettledAskAgent(
           operation.target,
           operation,
-          await herdr.promptAndWait(
+          await orchestrator.promptAndWait(
             operation.agentName,
             prompt ?? "",
             timeoutMs,
@@ -480,11 +475,11 @@ export class AsyncAskCoordinator {
 
   private async recoverAsk(
     operation: AsyncAskOperation,
-    herdr: HerdrClient,
+    orchestrator: Orchestrator,
     preserveChildSession: (session: string) => void,
   ): Promise<{ launch: AskLaunchResult; answer: string }> {
     while (true) {
-      const agent = await herdr.getAgent(operation.agentName);
+      const agent = await orchestrator.getAgent(operation.agentName);
       const childSession = resolveAskSessionReference(
         operation.target,
         agent.session,
@@ -494,7 +489,7 @@ export class AsyncAskCoordinator {
       }
       if (agent.status === "working") {
         const remaining = remainingAskTime(operation);
-        const settled = await herdr.waitForAgent(
+        const settled = await orchestrator.waitForAgent(
           operation.agentName,
           remaining,
         );
@@ -526,13 +521,16 @@ export class AsyncAskCoordinator {
         remainingAskTime(operation),
       );
       try {
-        await herdr.waitForAgent(operation.agentName, activityWait, [
+        await orchestrator.waitForAgent(operation.agentName, activityWait, [
           "working",
           "done",
           "blocked",
         ]);
       } catch (error) {
-        if (!(error instanceof HerdrCommandError) || error.code !== "timeout") {
+        if (
+          !(error instanceof OrchestrationError) ||
+          error.code !== "timeout"
+        ) {
           throw error;
         }
       }
@@ -545,7 +543,7 @@ export class AsyncAskCoordinator {
   ): Promise<string> {
     return retryAskResultExtraction(
       () =>
-        this.dependencies.extractAnswer(
+        (this.dependencies.extractAnswer ?? defaultExtractAnswer)(
           operation.target,
           childSession,
           operation.cwd,
@@ -652,7 +650,7 @@ export async function retryAskResultExtraction(
 
 function resolveAskSessionReference(
   target: AskTarget,
-  session: HerdrAgentSession | undefined,
+  session: AgentSessionReference | undefined,
 ): string | undefined {
   return target === "pi"
     ? resolvePiSessionReference(session)
@@ -662,10 +660,8 @@ function resolveAskSessionReference(
 function remainingAskTime(operation: AsyncAskOperation): number {
   const remaining = operation.deadlineAt - Date.now();
   if (remaining <= 0) {
-    throw new HerdrCommandError(
-      "agent wait",
+    throw new OrchestrationError(
       "consultation deadline elapsed during recovery",
-      "",
       { code: "timeout" },
     );
   }
@@ -674,7 +670,7 @@ function remainingAskTime(operation: AsyncAskOperation): number {
 
 function classifyAsyncAskFailure(error: unknown): AskOperationFailure {
   let reason: FailureReason = "prompt_failed";
-  if (error instanceof HerdrCommandError && error.code === "timeout") {
+  if (error instanceof OrchestrationError && error.code === "timeout") {
     reason = "timeout";
   } else if (error instanceof AskLaunchError && error.status === "blocked") {
     reason = "blocked";

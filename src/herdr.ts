@@ -1,4 +1,15 @@
 import { execFile } from "node:child_process";
+import {
+  AGENT_STATUSES,
+  type AgentSessionReference,
+  type AgentState,
+  type AgentStatus,
+  type AgentTarget,
+  type Orchestrator,
+  OrchestrationError,
+  type OrchestrationErrorOptions,
+  type SplitPaneOptions,
+} from "./orchestrator.ts";
 
 export const HERDR_EXECUTABLE = "herdr";
 
@@ -23,40 +34,11 @@ export type HerdrCommandRunner = (
   timeoutMs: number,
 ) => Promise<HerdrProcessOutput>;
 
-export interface SplitPaneOptions {
-  paneId: string;
-  cwd: string;
-  direction: "right" | "down";
-}
+export type HerdrCommandErrorOptions = OrchestrationErrorOptions;
 
-export const HERDR_AGENT_STATUSES = [
-  "idle",
-  "working",
-  "blocked",
-  "done",
-  "unknown",
-] as const;
-
-export type HerdrAgentStatus = (typeof HERDR_AGENT_STATUSES)[number];
-
-export type HerdrAgentSession =
-  | { agent: "pi"; kind: "path"; value: string }
-  | { agent: "claude"; kind: "id"; value: string };
-
-export interface HerdrAgent {
-  status: HerdrAgentStatus;
-  paneId: string;
-  session?: HerdrAgentSession;
-}
-
-export interface HerdrCommandErrorOptions extends ErrorOptions {
-  code?: string;
-}
-
-export class HerdrCommandError extends Error {
+export class HerdrCommandError extends OrchestrationError {
   readonly operation: string;
   readonly stderr: string;
-  readonly code: string | undefined;
 
   constructor(
     operation: string,
@@ -68,11 +50,10 @@ export class HerdrCommandError extends Error {
     this.name = "HerdrCommandError";
     this.operation = operation;
     this.stderr = stderr;
-    this.code = options?.code;
   }
 }
 
-export class HerdrClient {
+export class HerdrClient implements Orchestrator {
   private readonly runner: HerdrCommandRunner;
   private readonly environment: NodeJS.ProcessEnv;
 
@@ -120,7 +101,7 @@ export class HerdrClient {
     agentName: string,
     prompt: string,
     timeoutMs = DEFAULT_COMMAND_TIMEOUT_MS,
-  ): Promise<HerdrAgent> {
+  ): Promise<AgentState> {
     validateTimeout(timeoutMs);
     const result = await this.execute(
       [
@@ -145,7 +126,7 @@ export class HerdrClient {
     agentName: string,
     prompt: string,
     timeoutMs: number,
-  ): Promise<HerdrAgent> {
+  ): Promise<AgentState> {
     validateTimeout(timeoutMs);
     const result = await this.execute(
       [
@@ -168,7 +149,7 @@ export class HerdrClient {
     return readAgent(result, "agent prompt");
   }
 
-  async getAgent(agentName: string): Promise<HerdrAgent> {
+  async getAgent(agentName: string): Promise<AgentState> {
     const result = await this.execute(["agent", "get", agentName]);
     return readAgent(result, "agent get");
   }
@@ -176,8 +157,8 @@ export class HerdrClient {
   async waitForAgent(
     agentName: string,
     timeoutMs: number,
-    until: readonly HerdrAgentStatus[] = ["idle", "done", "blocked"],
-  ): Promise<HerdrAgent> {
+    until: readonly AgentStatus[] = ["idle", "done", "blocked"],
+  ): Promise<AgentState> {
     validateTimeout(timeoutMs);
     if (until.length === 0) {
       throw new RangeError("until must include at least one agent status");
@@ -198,7 +179,7 @@ export class HerdrClient {
   }
 
   async startAgent(
-    kind: "pi" | "claude",
+    kind: AgentTarget,
     agentName: string,
     paneId: string,
     agentArgs: readonly string[],
@@ -420,7 +401,7 @@ function readPaneFocused(result: unknown, operation: string): boolean {
   return focused;
 }
 
-function readAgent(result: unknown, operation: string): HerdrAgent {
+function readAgent(result: unknown, operation: string): AgentState {
   if (!isRecord(result) || !isRecord(result.agent)) {
     throw new HerdrCommandError(
       operation,
@@ -429,7 +410,7 @@ function readAgent(result: unknown, operation: string): HerdrAgent {
   }
 
   const status = result.agent.agent_status;
-  if (!isHerdrAgentStatus(status)) {
+  if (!isAgentStatus(status)) {
     throw new HerdrCommandError(
       operation,
       `Herdr response for ${operation} included an invalid agent status`,
@@ -452,7 +433,7 @@ function readAgent(result: unknown, operation: string): HerdrAgent {
     sessionRecord.value.length > 0
       ? sessionRecord.value
       : undefined;
-  let session: HerdrAgentSession | undefined;
+  let session: AgentSessionReference | undefined;
   if (
     sessionValue !== undefined &&
     sessionRecord?.agent === "pi" &&
@@ -484,10 +465,9 @@ function validateTimeout(timeoutMs: number): void {
   }
 }
 
-function isHerdrAgentStatus(value: unknown): value is HerdrAgentStatus {
+function isAgentStatus(value: unknown): value is AgentStatus {
   return (
-    typeof value === "string" &&
-    HERDR_AGENT_STATUSES.includes(value as HerdrAgentStatus)
+    typeof value === "string" && AGENT_STATUSES.includes(value as AgentStatus)
   );
 }
 

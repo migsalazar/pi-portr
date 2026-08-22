@@ -9,7 +9,7 @@
 
 # Architecture and Safety
 
-- Do not add a generic backend interface until a second backend exists.
+- Keep orchestration policy backend-neutral and isolate Herdr behind a Portr-owned contract. Add backend-specific behavior only in concrete adapters; do not add backend selection until a second implementation exists.
 - Use Pi session APIs for active, compaction-aware context; do not parse JSONL for normal extraction.
 - Never transfer hidden reasoning, base64 payloads, or unnecessary tool output.
 - Ask targets must use harness-level read-only restrictions; this is not an OS sandbox.

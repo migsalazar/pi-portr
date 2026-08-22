@@ -8,11 +8,8 @@ import {
 } from "../../src/claude-target.ts";
 import { launchAsk } from "../../src/commands/ask.ts";
 import { launchPass } from "../../src/commands/pass.ts";
-import {
-  type HerdrAgent,
-  type HerdrAgentStatus,
-  HerdrClient,
-} from "../../src/herdr.ts";
+import { HerdrClient } from "../../src/herdr.ts";
+import type { AgentState, AgentStatus } from "../../src/orchestrator.ts";
 import {
   extractPiSessionAnswer,
   resolvePiSessionReference,
@@ -127,7 +124,7 @@ async function runAskFlow(
 function settledDestination(
   target: IntegrationTarget,
   paneId: string,
-  agent: HerdrAgent,
+  agent: AgentState,
 ): SettledDestination {
   assertSettledStatus(agent.status);
   const childSession =
@@ -139,7 +136,7 @@ function settledDestination(
 }
 
 function assertSettledStatus(
-  status: HerdrAgentStatus,
+  status: AgentStatus,
 ): asserts status is "idle" | "done" {
   assert.ok(
     status === "idle" || status === "done",

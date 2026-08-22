@@ -26,7 +26,7 @@ import {
   quoteReferenceBlock,
   sanitizeTransferText,
 } from "../context.ts";
-import { HerdrClient } from "../herdr.ts";
+import type { CreateOrchestrator, Orchestrator } from "../orchestrator.ts";
 import { buildPiLaunchArgs, extractPiSessionAnswer } from "../pi-target.ts";
 import {
   ASYNC_ASK_OPERATION_ENTRY,
@@ -53,8 +53,11 @@ export class AskUsageError extends Error {
   }
 }
 
-export function registerAskCommand(pi: ExtensionAPI): void {
-  const asyncAsks = new AsyncAskCoordinator(pi);
+export function registerAskCommand(
+  pi: ExtensionAPI,
+  createOrchestrator: CreateOrchestrator,
+): void {
+  const asyncAsks = new AsyncAskCoordinator(pi, { createOrchestrator });
 
   pi.on("session_start", (_event, ctx) => {
     asyncAsks.reconcile(ctx);
@@ -72,7 +75,7 @@ export function registerAskCommand(pi: ExtensionAPI): void {
   pi.registerCommand("portr-ask", {
     description: "Ask a question in another visible agent session",
     handler: async (args, ctx) => {
-      await handleAsk(pi, asyncAsks, args, ctx);
+      await handleAsk(pi, asyncAsks, createOrchestrator, args, ctx);
     },
   });
 }
@@ -180,7 +183,7 @@ export function buildAskPrompt(context: string, question: string): string {
 
 export async function startAskDestination(
   target: AskTarget,
-  herdr: HerdrClient,
+  orchestrator: Orchestrator,
   options: {
     originPaneId: string;
     cwd: string;
@@ -192,14 +195,14 @@ export async function startAskDestination(
   let paneId: string | undefined;
 
   try {
-    paneId = await herdr.splitPane({
+    paneId = await orchestrator.splitPane({
       paneId: options.originPaneId,
       cwd: options.cwd,
       direction: "right",
     });
 
     stage = "start";
-    await herdr.startAgent(
+    await orchestrator.startAgent(
       target,
       options.agentName,
       paneId,
@@ -221,7 +224,7 @@ export async function startAskDestination(
 
 export async function launchAsk(
   target: AskTarget,
-  herdr: HerdrClient,
+  orchestrator: Orchestrator,
   options: {
     originPaneId: string;
     cwd: string;
@@ -231,10 +234,10 @@ export async function launchAsk(
     model?: string;
   },
 ): Promise<AskLaunchResult> {
-  const destination = await startAskDestination(target, herdr, options);
+  const destination = await startAskDestination(target, orchestrator, options);
 
   try {
-    const agent = await herdr.promptAndWait(
+    const agent = await orchestrator.promptAndWait(
       destination.agentName,
       options.prompt,
       options.timeoutMs ?? ASK_WAIT_TIMEOUT_MS,
@@ -256,6 +259,7 @@ export async function launchAsk(
 async function handleAsk(
   pi: ExtensionAPI,
   asyncAsks: AsyncAskCoordinator,
+  createOrchestrator: CreateOrchestrator,
   rawArguments: string,
   ctx: ExtensionCommandContext,
 ): Promise<void> {
@@ -281,12 +285,15 @@ async function handleAsk(
     return;
   }
 
-  const herdr = new HerdrClient();
+  const orchestrator = createOrchestrator();
   let originPaneId: string;
   try {
-    originPaneId = await herdr.currentPane();
+    originPaneId = await orchestrator.currentPane();
   } catch (error) {
-    ctx.ui.notify(`Herdr preflight failed: ${errorMessage(error)}`, "error");
+    ctx.ui.notify(
+      `Orchestration preflight failed: ${errorMessage(error)}`,
+      "error",
+    );
     return;
   }
 
@@ -343,7 +350,7 @@ async function handleAsk(
       };
       const destination = await startAskDestination(
         args.target,
-        herdr,
+        orchestrator,
         destinationOptions,
       );
       const now = Date.now();
@@ -386,7 +393,7 @@ async function handleAsk(
       prompt,
       ...(args.model === undefined ? {} : { model: args.model }),
     };
-    launch = await launchAsk(args.target, herdr, launchOptions);
+    launch = await launchAsk(args.target, orchestrator, launchOptions);
   } catch (error) {
     ctx.ui.notify(errorMessage(error), "error");
     return;

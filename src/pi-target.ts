@@ -1,7 +1,7 @@
 import { SessionManager } from "@earendil-works/pi-coding-agent";
 import { AskResultError } from "./ask-result.ts";
 import { sanitizeTransferText } from "./context.ts";
-import type { HerdrAgentSession } from "./herdr.ts";
+import type { AgentSessionReference } from "./orchestrator.ts";
 
 export const PI_READ_ONLY_TOOLS = ["read", "grep", "find", "ls"] as const;
 
@@ -29,7 +29,7 @@ export function buildPiLaunchArgs(options: PiLaunchOptions): string[] {
 }
 
 export function resolvePiSessionReference(
-  session: HerdrAgentSession | undefined,
+  session: AgentSessionReference | undefined,
 ): string | undefined {
   return session?.agent === "pi" ? session.value : undefined;
 }

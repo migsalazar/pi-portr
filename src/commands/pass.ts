@@ -6,7 +6,7 @@ import {
 } from "@earendil-works/pi-coding-agent";
 import { buildClaudeLaunchArgs } from "../claude-target.ts";
 import { buildTransferContext, quoteReferenceBlock } from "../context.ts";
-import { HerdrClient } from "../herdr.ts";
+import type { CreateOrchestrator, Orchestrator } from "../orchestrator.ts";
 import { buildPiLaunchArgs } from "../pi-target.ts";
 
 const MAX_HANDOFF_CHARACTERS = 60_000;
@@ -77,11 +77,14 @@ export class PassLaunchError extends Error {
   }
 }
 
-export function registerPassCommand(pi: ExtensionAPI): void {
+export function registerPassCommand(
+  pi: ExtensionAPI,
+  createOrchestrator: CreateOrchestrator,
+): void {
   pi.registerCommand("portr-pass", {
     description: "Hand off work to another visible agent session",
     handler: async (args, ctx) => {
-      await handlePass(args, ctx);
+      await handlePass(createOrchestrator, args, ctx);
     },
   });
 }
@@ -136,7 +139,7 @@ export function parsePassArguments(input: string): PassArguments {
 
 export async function launchPass(
   target: PassTarget,
-  herdr: HerdrClient,
+  orchestrator: Orchestrator,
   options: {
     originPaneId: string;
     cwd: string;
@@ -149,14 +152,14 @@ export async function launchPass(
   let paneId: string | undefined;
 
   try {
-    paneId = await herdr.splitPane({
+    paneId = await orchestrator.splitPane({
       paneId: options.originPaneId,
       cwd: options.cwd,
       direction: "right",
     });
 
     stage = "start";
-    await herdr.startAgent(
+    await orchestrator.startAgent(
       target,
       options.agentName,
       paneId,
@@ -172,11 +175,15 @@ export async function launchPass(
     );
 
     stage = "prompt";
-    await promptPassDestination(herdr, options.agentName, options.prompt);
+    await promptPassDestination(
+      orchestrator,
+      options.agentName,
+      options.prompt,
+    );
 
     stage = "focus";
     await focusDestinationIfOriginRemainsFocused(
-      herdr,
+      orchestrator,
       options.originPaneId,
       options.agentName,
     );
@@ -188,28 +195,28 @@ export async function launchPass(
 }
 
 async function focusDestinationIfOriginRemainsFocused(
-  herdr: HerdrClient,
+  orchestrator: Orchestrator,
   originPaneId: string,
   agentName: string,
 ): Promise<void> {
   let originIsFocused: boolean;
   try {
-    originIsFocused = await herdr.paneIsFocused(originPaneId);
+    originIsFocused = await orchestrator.paneIsFocused(originPaneId);
   } catch {
     return;
   }
 
   if (originIsFocused) {
-    await herdr.focus(agentName);
+    await orchestrator.focus(agentName);
   }
 }
 
 async function promptPassDestination(
-  herdr: HerdrClient,
+  orchestrator: Orchestrator,
   agentName: string,
   prompt: string,
 ): Promise<void> {
-  const agent = await herdr.promptUntilWorking(agentName, prompt);
+  const agent = await orchestrator.promptUntilWorking(agentName, prompt);
   if (agent.status === "blocked") {
     throw new Error("destination is blocked and requires intervention");
   }
@@ -221,6 +228,7 @@ async function promptPassDestination(
 }
 
 async function handlePass(
+  createOrchestrator: CreateOrchestrator,
   rawArguments: string,
   ctx: ExtensionCommandContext,
 ): Promise<void> {
@@ -242,12 +250,15 @@ async function handlePass(
     return;
   }
 
-  const herdr = new HerdrClient();
+  const orchestrator = createOrchestrator();
   let originPaneId: string;
   try {
-    originPaneId = await herdr.currentPane();
+    originPaneId = await orchestrator.currentPane();
   } catch (error) {
-    ctx.ui.notify(`Herdr preflight failed: ${errorMessage(error)}`, "error");
+    ctx.ui.notify(
+      `Orchestration preflight failed: ${errorMessage(error)}`,
+      "error",
+    );
     return;
   }
 
@@ -302,7 +313,7 @@ async function handlePass(
       prompt: approvedPrompt,
       ...(args.model === undefined ? {} : { model: args.model }),
     };
-    const result = await launchPass(args.target, herdr, launchOptions);
+    const result = await launchPass(args.target, orchestrator, launchOptions);
     ctx.ui.notify(
       `Handoff delivered to ${result.agentName} (${result.paneId})`,
       "info",

@@ -7,11 +7,20 @@ import {
   parseHerdrError,
   parseHerdrResult,
 } from "../src/herdr.ts";
+import { OrchestrationError } from "../src/orchestrator.ts";
 
 test("parseHerdrResult rejects malformed JSON", () => {
   assert.throws(
     () => parseHerdrResult("not json", "pane current"),
     HerdrCommandError,
+  );
+});
+
+test("Herdr errors satisfy the orchestration error contract", () => {
+  assert.ok(
+    new HerdrCommandError("agent wait", "timed out", "", {
+      code: "timeout",
+    }) instanceof OrchestrationError,
   );
 });
 
