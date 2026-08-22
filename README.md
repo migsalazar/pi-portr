@@ -12,25 +12,11 @@ https://github.com/user-attachments/assets/de9d42cc-9b28-4312-90d0-e80e122fc4f4
 
 ## Installation
 
-From a local checkout:
-
 ```bash
-pi install /absolute/path/to/pi-portr
+pi install npm:pi-portr
 ```
 
-To try it for one Pi run without changing package settings:
-
-```bash
-pi -e /absolute/path/to/pi-portr
-```
-
-After the package is published to npm:
-
-```bash
-pi install npm:pi-portr@0.1.0
-```
-
-Pi packages execute with full user permissions. Review the source before installation.
+> **Security:** Pi packages run with full system access. Review source code before installation.
 
 Install [Herdr](https://herdr.dev), enter a Herdr-managed pane, and start Pi from inside that pane. Starting Pi outside Herdr leaves Portr without the pane context it needs.
 
@@ -48,21 +34,12 @@ Ask starts Pi with only `read`, `grep`, `find`, and `ls`, or Claude with only `R
 
 Destination panes and sessions are intentionally preserved after completion and after partial or uncertain failures.
 
-## Architecture notes and limits
+## Architecture and limits
 
-- Pi is the only origin harness; Herdr is the only orchestration adapter; Pi and Claude Code are the concrete destination adapters.
-- `ask` state is persisted as append-only snapshots in the origin Pi session, not as strict event sourcing.
-- Herdr is invoked with argument arrays via `execFile(..., { shell: false })`, which avoids shell interpolation. It does not make arbitrary command execution safe or sandboxed.
-- Ask delivery is reconciliable and idempotent under the current operation-id and origin-session contract; it is not a universal exactly-once guarantee.
-- Portr transfers semantic, bounded context and durable references. It does not make full agent sessions portable or replay-equivalent.
-
-## Initial scope
-
-- Pi as the origin harness
-- Herdr as the workspace orchestration adapter
-- Pi and Claude Code as destinations
-- Compaction-aware context without hidden reasoning or unnecessary tool output
-- Asynchronous ask by default
+- Current scope is Pi as the origin, Herdr as the orchestration adapter, and Pi or Claude Code as destinations; `ask` is asynchronous by default.
+- Context transfer is compaction-aware, semantic, and bounded. It excludes hidden reasoning and unnecessary tool output, and does not make sessions portable or replay-equivalent.
+- `ask` stores append-only snapshots in the origin Pi session. Delivery is reconciliable and idempotent within the current operation-id and origin-session contract, not a universal exactly-once guarantee.
+- Herdr is invoked with argument arrays via `execFile(..., { shell: false })`, avoiding shell interpolation; this does not make arbitrary command execution safe or sandboxed.
 
 ## Requirements
 
@@ -75,16 +52,15 @@ The current Claude integration was validated with Claude Code `2.1.239`. Result 
 
 Ask restrictions are harness-level policy, not an operating-system sandbox.
 
-## Testing
-
-Default checks never invoke models:
+## Development
 
 ```bash
+npm ci --ignore-scripts
 npm run check
 npm pack --dry-run
 ```
 
-The live Herdr integration runner is opt-in, makes one paid model call, creates a destination pane, and intentionally preserves it for inspection. Run it from a Herdr-managed pane and select one target and flow:
+Live integration tests are opt-in, must run from a Herdr-managed pane, and may incur model-provider costs:
 
 ```bash
 PORTR_RUN_MODEL_INTEGRATION=1 \
@@ -93,4 +69,4 @@ PORTR_INTEGRATION_FLOW=pass \
 npm run test:integration
 ```
 
-`PORTR_INTEGRATION_TARGET` accepts `pi` or `claude`; `PORTR_INTEGRATION_FLOW` accepts `pass` or `ask`. Optional variables are `PORTR_INTEGRATION_MODEL`, `PORTR_INTEGRATION_TIMEOUT_MS` (maximum 300000), and `PORTR_INTEGRATION_SCENARIO` (`marker`, `short`, `long`, or `tools`). The pass flow specifically guards the one-shot prompt-acknowledgment contract: it never retries an ambiguous submission.
+Targets are `pi` or `claude`; flows are `pass` or `ask`.
