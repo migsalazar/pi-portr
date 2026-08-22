@@ -4,6 +4,14 @@
   "description": "Hand off work and ask questions across visible, independent agent sessions.",
   "type": "module",
   "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/migsalazar/pi-portr.git"
+  },
+  "homepage": "https://github.com/migsalazar/pi-portr#readme",
+  "bugs": {
+    "url": "https://github.com/migsalazar/pi-portr/issues"
+  },
   "engines": {
     "node": ">=22.19.0"
   },
@@ -31,7 +39,8 @@
   "pi": {
     "extensions": [
       "./src/index.ts"
-    ]
+    ],
+    "video": "https://raw.githubusercontent.com/migsalazar/pi-portr/main/assets/pi-portr-demo-0.1.mp4"
   },
   "peerDependencies": {
     "@earendil-works/pi-coding-agent": "*"
