@@ -6,6 +6,10 @@ Hand off work and ask questions across visible, independent agent sessions.
 
 > Status: MVP implemented and validated for the `0.1.0` release.
 
+## Demo
+
+https://github.com/user-attachments/assets/de9d42cc-9b28-4312-90d0-e80e122fc4f4
+
 ## Installation
 
 From a local checkout:
