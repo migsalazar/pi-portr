@@ -26,8 +26,17 @@ import {
   quoteReferenceBlock,
   sanitizeTransferText,
 } from "../context.ts";
-import type { CreateOrchestrator, Orchestrator } from "../orchestrator.ts";
+import {
+  createDestinationPane,
+  type CreateOrchestrator,
+  type Orchestrator,
+} from "../orchestrator.ts";
 import { buildPiLaunchArgs, extractPiSessionAnswer } from "../pi-target.ts";
+import {
+  DEFAULT_MAX_PANES,
+  type LoadPortrSettings,
+  readPortrSettings,
+} from "../settings.ts";
 import { resolveAskOperation, updateOperationFooter } from "./operations.ts";
 import {
   ASYNC_ASK_OPERATION_ENTRY,
@@ -58,6 +67,7 @@ export class AskUsageError extends Error {
 export function registerAskCommand(
   pi: ExtensionAPI,
   createOrchestrator: CreateOrchestrator,
+  loadSettings: LoadPortrSettings = readPortrSettings,
 ): void {
   const asyncAsks = new AsyncAskCoordinator(pi, { createOrchestrator });
 
@@ -79,7 +89,14 @@ export function registerAskCommand(
   pi.registerCommand("portr-ask", {
     description: "Ask a question in another visible agent session",
     handler: async (args, ctx) => {
-      await handleAsk(pi, asyncAsks, createOrchestrator, args, ctx);
+      await handleAsk(
+        pi,
+        asyncAsks,
+        createOrchestrator,
+        loadSettings,
+        args,
+        ctx,
+      );
     },
   });
   pi.registerCommand("portr-collect", {
@@ -217,16 +234,17 @@ export async function startAskDestination(
     cwd: string;
     agentName: string;
     model?: string;
+    maxPanes?: number;
   },
 ): Promise<AskDestination> {
   let stage: AskLaunchStage = "split";
   let paneId: string | undefined;
 
   try {
-    paneId = await orchestrator.splitPane({
-      paneId: options.originPaneId,
+    paneId = await createDestinationPane(orchestrator, {
+      originPaneId: options.originPaneId,
       cwd: options.cwd,
-      direction: "right",
+      maxPanes: options.maxPanes ?? DEFAULT_MAX_PANES,
     });
 
     stage = "start";
@@ -260,6 +278,7 @@ export async function launchAsk(
     prompt: string;
     timeoutMs?: number;
     model?: string;
+    maxPanes?: number;
   },
 ): Promise<AskLaunchResult> {
   const destination = await startAskDestination(target, orchestrator, options);
@@ -335,6 +354,7 @@ async function handleAsk(
   pi: ExtensionAPI,
   asyncAsks: AsyncAskCoordinator,
   createOrchestrator: CreateOrchestrator,
+  loadSettings: LoadPortrSettings,
   rawArguments: string,
   ctx: ExtensionCommandContext,
 ): Promise<void> {
@@ -419,6 +439,17 @@ async function handleAsk(
     return;
   }
 
+  let maxPanes: number;
+  try {
+    ({ maxPanes } = await loadSettings());
+  } catch (error) {
+    ctx.ui.notify(
+      `Portr settings unavailable: ${errorMessage(error)}`,
+      "error",
+    );
+    return;
+  }
+
   const operationId = randomUUID();
   const agentName = `portr-ask-${operationId.slice(0, 8)}`;
 
@@ -436,6 +467,7 @@ async function handleAsk(
         originPaneId,
         cwd: ctx.cwd,
         agentName,
+        maxPanes,
         ...(args.model === undefined ? {} : { model: args.model }),
       };
       const destination = await startAskDestination(
@@ -483,6 +515,7 @@ async function handleAsk(
       cwd: ctx.cwd,
       agentName,
       prompt,
+      maxPanes,
       ...(args.model === undefined ? {} : { model: args.model }),
     };
     launch = await launchAsk(args.target, orchestrator, launchOptions);

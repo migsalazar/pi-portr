@@ -223,6 +223,66 @@ test("HerdrClient getAgent reads the current durable session reference", async (
   assert.deepEqual(args, ["agent", "get", "worker"]);
 });
 
+test("HerdrClient reads a validated origin pane layout", async () => {
+  let args: string[] | undefined;
+  const runner: HerdrCommandRunner = async (invocation) => {
+    args = invocation.args;
+    return jsonOutput({
+      layout: {
+        zoomed: false,
+        panes: [
+          {
+            pane_id: "w1:p1",
+            rect: { x: 0, y: 0, width: 91, height: 58 },
+            focused: false,
+          },
+          {
+            pane_id: "w1:p2",
+            rect: { x: 91, y: 0, width: 90, height: 58 },
+            focused: true,
+          },
+        ],
+      },
+    });
+  };
+  const client = new HerdrClient(runner, { HERDR_ENV: "1" });
+
+  assert.deepEqual(await client.paneLayout("w1:p1"), {
+    paneCount: 2,
+    origin: { width: 91, height: 58 },
+  });
+  assert.deepEqual(args, ["pane", "layout", "--pane", "w1:p1"]);
+});
+
+test("HerdrClient rejects ambiguous pane layouts", async () => {
+  for (const layout of [
+    {
+      zoomed: true,
+      panes: [{ pane_id: "w1:p1", rect: { width: 91, height: 58 } }],
+    },
+    {
+      zoomed: false,
+      panes: [{ pane_id: "w1:p2", rect: { width: 91, height: 58 } }],
+    },
+    {
+      zoomed: false,
+      panes: [
+        { pane_id: "w1:p1", rect: { width: 91, height: 58 } },
+        { pane_id: "w1:p1", rect: { width: 90, height: 58 } },
+      ],
+    },
+    {
+      zoomed: false,
+      panes: [{ pane_id: "w1:p1", rect: { width: 0, height: 58 } }],
+    },
+  ]) {
+    const client = new HerdrClient(async () => jsonOutput({ layout }), {
+      HERDR_ENV: "1",
+    });
+    await assert.rejects(() => client.paneLayout("w1:p1"), HerdrCommandError);
+  }
+});
+
 test("HerdrClient reads global pane focus state", async () => {
   let args: string[] | undefined;
   const runner: HerdrCommandRunner = async (invocation) => {

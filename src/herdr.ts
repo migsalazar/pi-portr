@@ -8,6 +8,7 @@ import {
   type Orchestrator,
   OrchestrationError,
   type OrchestrationErrorOptions,
+  type PaneLayout,
   type SplitPaneOptions,
 } from "./orchestrator.ts";
 
@@ -75,6 +76,11 @@ export class HerdrClient implements Orchestrator {
 
     const result = await this.execute(["pane", "current", "--current"]);
     return readPaneId(result, "pane current");
+  }
+
+  async paneLayout(paneId: string): Promise<PaneLayout> {
+    const result = await this.execute(["pane", "layout", "--pane", paneId]);
+    return readPaneLayout(result, paneId, "pane layout");
   }
 
   async splitPane(options: SplitPaneOptions): Promise<string> {
@@ -380,6 +386,97 @@ function readTerminalId(result: unknown, operation: string): string {
   }
 
   return terminalId;
+}
+
+function readPaneLayout(
+  result: unknown,
+  originPaneId: string,
+  operation: string,
+): PaneLayout {
+  if (!isRecord(result) || !isRecord(result.layout)) {
+    throw new HerdrCommandError(
+      operation,
+      `Herdr response for ${operation} did not include a layout`,
+    );
+  }
+  if (result.layout.zoomed !== false) {
+    throw new HerdrCommandError(
+      operation,
+      `Herdr response for ${operation} is zoomed or ambiguous; unzoom before using Portr`,
+    );
+  }
+
+  const panes = result.layout.panes;
+  if (!Array.isArray(panes) || panes.length === 0) {
+    throw new HerdrCommandError(
+      operation,
+      `Herdr response for ${operation} did not include panes`,
+    );
+  }
+
+  const paneIds = new Set<string>();
+  let origin: PaneLayout["origin"] | undefined;
+  for (const pane of panes) {
+    if (!isRecord(pane)) {
+      throw new HerdrCommandError(
+        operation,
+        `Herdr response for ${operation} included an invalid pane`,
+      );
+    }
+    const paneId = pane.pane_id;
+    if (typeof paneId !== "string" || paneId.length === 0) {
+      throw new HerdrCommandError(
+        operation,
+        `Herdr response for ${operation} included a pane without an ID`,
+      );
+    }
+    if (paneIds.has(paneId)) {
+      throw new HerdrCommandError(
+        operation,
+        `Herdr response for ${operation} included duplicate pane ID ${paneId}`,
+      );
+    }
+    paneIds.add(paneId);
+
+    if (paneId === originPaneId) {
+      if (!isRecord(pane.rect)) {
+        throw new HerdrCommandError(
+          operation,
+          `Herdr response for ${operation} did not include origin dimensions`,
+        );
+      }
+      origin = {
+        width: readPositiveInteger(pane.rect.width, operation, "origin width"),
+        height: readPositiveInteger(
+          pane.rect.height,
+          operation,
+          "origin height",
+        ),
+      };
+    }
+  }
+
+  if (origin === undefined) {
+    throw new HerdrCommandError(
+      operation,
+      `Herdr response for ${operation} did not include origin pane ${originPaneId}`,
+    );
+  }
+  return { paneCount: panes.length, origin };
+}
+
+function readPositiveInteger(
+  value: unknown,
+  operation: string,
+  label: string,
+): number {
+  if (!Number.isSafeInteger(value) || (value as number) <= 0) {
+    throw new HerdrCommandError(
+      operation,
+      `Herdr response for ${operation} included an invalid ${label}`,
+    );
+  }
+  return value as number;
 }
 
 function readPaneFocused(result: unknown, operation: string): boolean {

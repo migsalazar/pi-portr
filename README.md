@@ -28,6 +28,7 @@ Install [Herdr](https://herdr.dev), enter a Herdr-managed pane, and start Pi fro
 /portr-status [operation-id]
 /portr-focus <operation-id>
 /portr-collect <operation-id>
+/portr-settings
 ```
 
 Pass builds a bounded semantic handoff from the active Pi context, opens it for review, and starts a visible destination through Herdr after approval. Pass requires a persisted origin session. Saving the editor records the exact approved prompt before launch; cancelling records nothing and creates no destination. Append-only receipts preserve delivery, focus, and destination references without replaying an ambiguous handoff. After delivery, Portr focuses the destination only if the origin pane is still focused, so switching elsewhere during launch is respected.
@@ -38,6 +39,10 @@ Ask starts Pi with only `read`, `grep`, `find`, and `ls`, or Claude with only `R
 
 Destination panes and sessions are intentionally preserved after completion and after partial or uncertain failures.
 
+Portr limits the current Herdr tab to four panes by default, counting panes regardless of who created them. Before each Ask or Pass split, it divides the origin pane along its longer visual side (`right` when its width is at least twice its height, otherwise `down`). At the configured limit, Portr refuses before creating a pane and tells the caller not to retry automatically. Use `/portr-settings` to change the limit. Pi can also inspect the setting or request a human-approved change through the discoverable `portr_settings` tool; ask Pi, for example, "How do I let pi-portr use more panes?"
+
+The setting is stored in Portr's own global `portr.json` under Pi's agent directory (normally `~/.pi/agent/portr.json`). Portr never raises the limit automatically, retries a refused operation, or closes an existing pane.
+
 ## Architecture and limits
 
 - Current scope is Pi as the origin, Herdr as the orchestration adapter, and Pi or Claude Code as destinations; `ask` is asynchronous by default.
@@ -45,6 +50,7 @@ Destination panes and sessions are intentionally preserved after completion and 
 - `ask` stores append-only snapshots in the origin Pi session. Delivery is reconciliable and idempotent within the current operation-id and origin-session contract, not a universal exactly-once guarantee.
 - `pass` stores the approved prompt and launch receipt, but never automatically resends an approved or failed handoff.
 - Herdr is invoked with argument arrays via `execFile(..., { shell: false })`, avoiding shell interpolation; this does not make arbitrary command execution safe or sandboxed.
+- The pane limit controls only Portr splits. It prevents normal sequential recursion but is not an atomic cross-process maximum when multiple Portr processes split concurrently.
 
 ## Requirements
 

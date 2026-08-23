@@ -149,6 +149,7 @@ for (const targetCase of [
     assert.deepEqual(
       calls.map((call) => call.args),
       [
+        ["pane", "layout", "--pane", "w1:p1"],
         [
           "pane",
           "split",
@@ -199,6 +200,9 @@ test("launchPass preserves user focus after the origin loses focus", async () =>
   const calls: HerdrInvocation[] = [];
   const runner: HerdrCommandRunner = async (invocation) => {
     calls.push(invocation);
+    if (invocation.args[1] === "layout") {
+      return paneLayoutOutput();
+    }
     if (invocation.args[1] === "split") {
       return jsonOutput({ pane: { pane_id: "w1:p2" } });
     }
@@ -251,6 +255,9 @@ test("launchPass preserves user focus when origin focus cannot be verified", asy
   const calls: HerdrInvocation[] = [];
   const runner: HerdrCommandRunner = async (invocation) => {
     calls.push(invocation);
+    if (invocation.args[1] === "layout") {
+      return paneLayoutOutput();
+    }
     if (invocation.args[1] === "split") {
       return jsonOutput({ pane: { pane_id: "w1:p2" } });
     }
@@ -296,6 +303,9 @@ for (const targetCase of [
     const calls: HerdrInvocation[] = [];
     const runner: HerdrCommandRunner = async (invocation) => {
       calls.push(invocation);
+      if (invocation.args[1] === "layout") {
+        return paneLayoutOutput();
+      }
       if (invocation.args[1] === "split") {
         return jsonOutput({ pane: { pane_id: "w1:p2" } });
       }
@@ -336,6 +346,9 @@ test("launchPass preserves a blocked destination without focusing", async () => 
   const calls: HerdrInvocation[] = [];
   const runner: HerdrCommandRunner = async (invocation) => {
     calls.push(invocation);
+    if (invocation.args[1] === "layout") {
+      return paneLayoutOutput();
+    }
     if (invocation.args[1] === "split") {
       return jsonOutput({ pane: { pane_id: "w1:p2" } });
     }
@@ -398,6 +411,27 @@ test("portr-pass persists the exact approved prompt and useful transitions", asy
   assert.equal(latest?.launchStage, "focus");
 });
 
+test("portr-pass preserves the approved receipt when settings are unavailable", async () => {
+  const run = await runPassCommand({ settingsFailure: true });
+  const receipt = [...restorePassReceipts(run.entries).values()][0];
+
+  assert.equal(receipt?.approvedPrompt, "# Approved handoff\n\nExact text");
+  assert.equal(receipt?.launchStage, "split");
+  assert.equal(receipt?.deliveryStatus, "failed");
+  assert.match(receipt?.failure?.message ?? "", /settings unavailable/);
+});
+
+test("portr-pass records an actionable split failure at the pane limit", async () => {
+  const run = await runPassCommand({ paneCount: 4 });
+  const receipt = [...restorePassReceipts(run.entries).values()][0];
+
+  assert.equal(receipt?.launchStage, "split");
+  assert.equal(receipt?.deliveryStatus, "failed");
+  assert.equal(receipt?.paneId, undefined);
+  assert.match(receipt?.failure?.message ?? "", /pane limit reached \(4\/4\)/);
+  assert.match(run.notifications.at(-1) ?? "", /\/portr-settings/);
+});
+
 test("portr-pass cancellation, invalid payload, and in-memory origin create no receipt", async () => {
   const cancelled = await runPassCommand({ approvedPrompt: undefined });
   const base64 = await runPassCommand({
@@ -440,6 +474,8 @@ async function runPassCommand(
     approvedPrompt?: string | undefined;
     originSession?: string | undefined;
     failureStage?: "split" | "start" | "prompt" | "focus";
+    paneCount?: number;
+    settingsFailure?: boolean;
   } = {},
 ): Promise<{
   entries: SessionEntry[];
@@ -489,6 +525,10 @@ async function runPassCommand(
   } as unknown as ExtensionAPI;
   const orchestrator = {
     currentPane: async () => "w1:p1",
+    paneLayout: async () => ({
+      paneCount: options.paneCount ?? 1,
+      origin: { width: 181, height: 58 },
+    }),
     splitPane: async () => {
       if (options.failureStage === "split") {
         throw new Error("split failed");
@@ -521,7 +561,16 @@ async function runPassCommand(
       }
     },
   } as unknown as Orchestrator;
-  registerPassCommand(pi, () => orchestrator);
+  registerPassCommand(
+    pi,
+    () => orchestrator,
+    async () => {
+      if (options.settingsFailure) {
+        throw new Error("settings failed");
+      }
+      return { maxPanes: 4 };
+    },
+  );
   const hasApprovedPrompt = Object.hasOwn(options, "approvedPrompt");
   const approvedPrompt = hasApprovedPrompt
     ? options.approvedPrompt
@@ -556,6 +605,9 @@ async function runPassCommand(
 function createPassRunner(calls: HerdrInvocation[]): HerdrCommandRunner {
   return async (invocation) => {
     calls.push(invocation);
+    if (invocation.args[1] === "layout") {
+      return paneLayoutOutput();
+    }
     if (invocation.args[1] === "split") {
       return jsonOutput({ pane: { pane_id: "w1:p2" } });
     }
@@ -574,6 +626,15 @@ function createPassRunner(calls: HerdrInvocation[]): HerdrCommandRunner {
     }
     return jsonOutput({ ok: true });
   };
+}
+
+function paneLayoutOutput(): { stdout: string; stderr: string } {
+  return jsonOutput({
+    layout: {
+      zoomed: false,
+      panes: [{ pane_id: "w1:p1", rect: { width: 181, height: 58 } }],
+    },
+  });
 }
 
 function jsonOutput(result: unknown): { stdout: string; stderr: string } {

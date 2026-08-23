@@ -14,12 +14,18 @@ import {
   quoteReferenceBlock,
   sanitizeTransferText,
 } from "../context.ts";
-import type {
-  AgentState,
-  CreateOrchestrator,
-  Orchestrator,
+import {
+  type AgentState,
+  createDestinationPane,
+  type CreateOrchestrator,
+  type Orchestrator,
 } from "../orchestrator.ts";
 import { buildPiLaunchArgs, resolvePiSessionReference } from "../pi-target.ts";
+import {
+  DEFAULT_MAX_PANES,
+  type LoadPortrSettings,
+  readPortrSettings,
+} from "../settings.ts";
 import {
   PASS_RECEIPT_ENTRY,
   PASS_RECEIPT_STATE_VERSION,
@@ -103,11 +109,12 @@ export class PassLaunchError extends Error {
 export function registerPassCommand(
   pi: ExtensionAPI,
   createOrchestrator: CreateOrchestrator,
+  loadSettings: LoadPortrSettings = readPortrSettings,
 ): void {
   pi.registerCommand("portr-pass", {
     description: "Hand off work to another visible agent session",
     handler: async (args, ctx) => {
-      await handlePass(pi, createOrchestrator, args, ctx);
+      await handlePass(pi, createOrchestrator, loadSettings, args, ctx);
     },
   });
 }
@@ -169,6 +176,7 @@ export async function launchPass(
     agentName: string;
     prompt: string;
     model?: string;
+    maxPanes?: number;
     onPaneCreated?(paneId: string): void;
     onDelivered?(agent: AgentState): void;
   },
@@ -177,10 +185,10 @@ export async function launchPass(
   let paneId: string | undefined;
 
   try {
-    paneId = await orchestrator.splitPane({
-      paneId: options.originPaneId,
+    paneId = await createDestinationPane(orchestrator, {
+      originPaneId: options.originPaneId,
       cwd: options.cwd,
-      direction: "right",
+      maxPanes: options.maxPanes ?? DEFAULT_MAX_PANES,
     });
     options.onPaneCreated?.(paneId);
 
@@ -274,6 +282,7 @@ async function promptPassDestination(
 async function handlePass(
   pi: ExtensionAPI,
   createOrchestrator: CreateOrchestrator,
+  loadSettings: LoadPortrSettings,
   rawArguments: string,
   ctx: ExtensionCommandContext,
 ): Promise<void> {
@@ -385,11 +394,21 @@ async function handlePass(
   persist(receipt);
 
   try {
+    let maxPanes: number;
+    try {
+      ({ maxPanes } = await loadSettings());
+    } catch (error) {
+      throw new Error(`Portr settings unavailable: ${errorMessage(error)}`, {
+        cause: error,
+      });
+    }
+
     const launchOptions = {
       originPaneId,
       cwd: ctx.cwd,
       agentName,
       prompt: approvedPrompt,
+      maxPanes,
       ...(args.model === undefined ? {} : { model: args.model }),
       onPaneCreated: (paneId: string) => {
         persist({

@@ -161,6 +161,10 @@ test("portr-ask --no-context skips context extraction and persists intent", asyn
   } as unknown as ExtensionAPI;
   const orchestrator = {
     currentPane: async () => "w1:p1",
+    paneLayout: async () => ({
+      paneCount: 1,
+      origin: { width: 181, height: 58 },
+    }),
     splitPane: async () => "w1:p2",
     startAgent: async () => undefined,
     promptAndWait: async (_agentName: string, prompt: string) => {
@@ -168,7 +172,11 @@ test("portr-ask --no-context skips context extraction and persists intent", asyn
       return new Promise<never>(() => undefined);
     },
   } as unknown as Orchestrator;
-  registerAskCommand(pi, () => orchestrator);
+  registerAskCommand(
+    pi,
+    () => orchestrator,
+    async () => ({ maxPanes: 4 }),
+  );
   const ctx = {
     mode: "tui",
     cwd: "/tmp/project",
@@ -257,6 +265,9 @@ for (const targetCase of [
     const calls: HerdrInvocation[] = [];
     const runner: HerdrCommandRunner = async (invocation) => {
       calls.push(invocation);
+      if (invocation.args[1] === "layout") {
+        return paneLayoutOutput();
+      }
       if (invocation.args[1] === "split") {
         return jsonOutput({ pane: { pane_id: "w1:p2" } });
       }
@@ -294,6 +305,7 @@ for (const targetCase of [
     assert.deepEqual(
       calls.map((call) => call.args),
       [
+        ["pane", "layout", "--pane", "w1:p1"],
         [
           "pane",
           "split",
@@ -343,6 +355,44 @@ for (const targetCase of [
   });
 }
 
+test("launchAsk refuses at the configured pane limit before mutation", async () => {
+  let splitCalled = false;
+  let startCalled = false;
+  const orchestrator = {
+    paneLayout: async () => ({
+      paneCount: 4,
+      origin: { width: 91, height: 29 },
+    }),
+    splitPane: async () => {
+      splitCalled = true;
+      return "w1:p2";
+    },
+    startAgent: async () => {
+      startCalled = true;
+    },
+  } as unknown as Orchestrator;
+
+  await assert.rejects(
+    () =>
+      launchAsk("pi", orchestrator, {
+        originPaneId: "w1:p1",
+        cwd: "/tmp/project",
+        agentName: "portr-ask-test",
+        prompt: "Question",
+        maxPanes: 4,
+      }),
+    (error: unknown) => {
+      assert.ok(error instanceof AskLaunchError);
+      assert.equal(error.stage, "split");
+      assert.match(error.message, /pane limit reached \(4\/4\)/);
+      assert.match(error.message, /portr_settings/);
+      return true;
+    },
+  );
+  assert.equal(splitCalled, false);
+  assert.equal(startCalled, false);
+});
+
 test("target session contracts reject the other harness reference", () => {
   const piSession = {
     agent: "pi" as const,
@@ -366,6 +416,9 @@ test("target session contracts reject the other harness reference", () => {
 
 test("launchAsk preserves references when the destination is blocked", async () => {
   const runner: HerdrCommandRunner = async (invocation) => {
+    if (invocation.args[1] === "layout") {
+      return paneLayoutOutput();
+    }
     if (invocation.args[1] === "split") {
       return jsonOutput({ pane: { pane_id: "w1:p2" } });
     }
@@ -411,6 +464,9 @@ test("launchAsk preserves references when the destination is blocked", async () 
 
 test("launchAsk rejects ambiguous lifecycle states", async () => {
   const runner: HerdrCommandRunner = async (invocation) => {
+    if (invocation.args[1] === "layout") {
+      return paneLayoutOutput();
+    }
     if (invocation.args[1] === "split") {
       return jsonOutput({ pane: { pane_id: "w1:p2" } });
     }
@@ -1309,6 +1365,15 @@ async function waitFor(predicate: () => boolean): Promise<void> {
     await new Promise((resolve) => setTimeout(resolve, 1));
   }
   throw new Error("Timed out waiting for async ask test condition");
+}
+
+function paneLayoutOutput(): { stdout: string; stderr: string } {
+  return jsonOutput({
+    layout: {
+      zoomed: false,
+      panes: [{ pane_id: "w1:p1", rect: { width: 181, height: 58 } }],
+    },
+  });
 }
 
 function jsonOutput(result: unknown): { stdout: string; stderr: string } {
