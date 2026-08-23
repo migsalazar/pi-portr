@@ -13,10 +13,7 @@ import {
   buildAskResultMessage,
   MAX_RETURN_ANSWER_CHARACTERS,
 } from "../src/async-ask.ts";
-import {
-  extractClaudeTranscriptAnswer,
-  resolveClaudeSessionReference,
-} from "../src/claude-target.ts";
+import { resolveClaudeSessionReference } from "../src/claude-target.ts";
 import {
   AskUsageError,
   buildAskPrompt,
@@ -258,6 +255,8 @@ for (const targetCase of [
       "dontAsk",
       "--model",
       "sonnet",
+      "--settings",
+      '{"hooks":{}}',
     ],
   },
 ]) {
@@ -294,6 +293,9 @@ for (const targetCase of [
       prompt: "Question\nwith another line",
       timeoutMs: 12_345,
       model: targetCase.model,
+      ...(targetCase.target === "claude"
+        ? { claudeReceipt: { settings: '{"hooks":{}}' } }
+        : {}),
     });
 
     assert.deepEqual(result, {
@@ -534,100 +536,6 @@ test("extractFinalAssistantAnswer rejects an incomplete final response", () => {
   );
 });
 
-test("extractClaudeTranscriptAnswer returns only completed main-chain text", () => {
-  const transcript = [
-    {
-      type: "assistant",
-      uuid: "thinking-record",
-      isSidechain: false,
-      message: {
-        id: "message-1",
-        role: "assistant",
-        stop_reason: "end_turn",
-        content: [{ type: "thinking", thinking: "hidden reasoning" }],
-      },
-    },
-    {
-      type: "assistant",
-      uuid: "final-record",
-      isSidechain: false,
-      message: {
-        id: "message-1",
-        role: "assistant",
-        stop_reason: "end_turn",
-        content: [
-          { type: "text", text: "Answer data:image/png;base64,AAABBB==" },
-        ],
-      },
-    },
-    {
-      type: "assistant",
-      uuid: "sidechain-record",
-      isSidechain: true,
-      message: {
-        id: "sidechain-message",
-        role: "assistant",
-        stop_reason: "end_turn",
-        content: [{ type: "text", text: "Subagent text" }],
-      },
-    },
-    {
-      type: "system",
-      subtype: "turn_duration",
-      parentUuid: "final-record",
-    },
-  ]
-    .map((record) => JSON.stringify(record))
-    .join("\n");
-
-  assert.equal(
-    extractClaudeTranscriptAnswer(transcript),
-    "Answer [base64 data omitted]",
-  );
-});
-
-test("extractClaudeTranscriptAnswer rejects incomplete or uncommitted output", () => {
-  const incomplete = [
-    {
-      type: "assistant",
-      uuid: "incomplete-record",
-      message: {
-        id: "message-1",
-        role: "assistant",
-        stop_reason: "tool_use",
-        content: [{ type: "text", text: "Still working" }],
-      },
-    },
-    {
-      type: "system",
-      subtype: "turn_duration",
-      parentUuid: "incomplete-record",
-    },
-  ]
-    .map((record) => JSON.stringify(record))
-    .join("\n");
-  const uncommitted = JSON.stringify({
-    type: "assistant",
-    uuid: "uncommitted-record",
-    message: {
-      id: "message-1",
-      role: "assistant",
-      stop_reason: "end_turn",
-      content: [{ type: "text", text: "Not durably complete" }],
-    },
-  });
-
-  assert.throws(() => extractClaudeTranscriptAnswer(incomplete), /incomplete/);
-  assert.throws(
-    () => extractClaudeTranscriptAnswer(uncommitted),
-    /completion marker/,
-  );
-  assert.throws(
-    () => extractClaudeTranscriptAnswer("{invalid"),
-    /invalid JSON/,
-  );
-});
-
 test("buildAskResultMessage labels bounded excerpts and preserves references", () => {
   const result = buildAskResultMessage({
     operationId: "operation-1",
@@ -780,7 +688,7 @@ test("AsyncAskCoordinator keeps one recovery monitor across same-branch reconcil
   );
 });
 
-test("AsyncAskCoordinator completes a fresh Claude prompt with durable target context", async () => {
+test("AsyncAskCoordinator completes a fresh Claude prompt from its operation receipt", async () => {
   const entries: SessionEntry[] = [];
   const sent: Array<{ message: unknown; options: unknown }> = [];
   const calls: HerdrInvocation[] = [];
@@ -793,7 +701,6 @@ test("AsyncAskCoordinator completes a fresh Claude prompt with durable target co
   const operation: AsyncAskOperation = {
     ...workingOperation(),
     target: "claude",
-    cwd: "/tmp/project",
   };
   const api = runtimeApi(entries, sent);
   const ctx = runtimeContext(entries);
@@ -805,7 +712,7 @@ test("AsyncAskCoordinator completes a fresh Claude prompt with durable target co
       extracted.push(args);
       extractionCount += 1;
       if (extractionCount === 1) {
-        throw new AskResultError("transcript not flushed yet");
+        throw new AskResultError("receipt not flushed yet");
       }
       return "Claude answer";
     },
@@ -817,8 +724,8 @@ test("AsyncAskCoordinator completes a fresh Claude prompt with durable target co
 
   assert.equal(calls[0]?.args[1], "prompt");
   assert.deepEqual(extracted, [
-    ["claude", "12345678-1234-1234-1234-123456789abc", "/tmp/project"],
-    ["claude", "12345678-1234-1234-1234-123456789abc", "/tmp/project"],
+    ["claude", "12345678-1234-1234-1234-123456789abc", "operation-async"],
+    ["claude", "12345678-1234-1234-1234-123456789abc", "operation-async"],
   ]);
   const deliveredMessage = sent[0]?.message as {
     details?: { target?: string; childSession?: string };
@@ -833,7 +740,6 @@ test("AsyncAskCoordinator completes a fresh Claude prompt with durable target co
   );
   assert.equal(restored?.status, "completed");
   assert.equal(restored?.target, "claude");
-  assert.equal(restored?.cwd, "/tmp/project");
 });
 
 test("AsyncAskCoordinator recovers without resubmitting or duplicating", async () => {

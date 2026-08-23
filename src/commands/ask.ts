@@ -19,7 +19,10 @@ import {
 } from "../async-ask.ts";
 import {
   buildClaudeLaunchArgs,
-  extractClaudeSessionAnswer,
+  cleanupClaudeAskReceipt,
+  type ClaudeAskReceiptLaunch,
+  extractClaudeReceiptAnswer,
+  prepareClaudeAskReceipt,
 } from "../claude-target.ts";
 import {
   buildTransferContext,
@@ -235,12 +238,16 @@ export async function startAskDestination(
     agentName: string;
     model?: string;
     maxPanes?: number;
+    claudeReceipt?: ClaudeAskReceiptLaunch;
   },
 ): Promise<AskDestination> {
   let stage: AskLaunchStage = "split";
   let paneId: string | undefined;
 
   try {
+    if (target === "claude" && options.claudeReceipt === undefined) {
+      throw new Error("Claude Ask requires hook receipt settings");
+    }
     paneId = await createDestinationPane(orchestrator, {
       originPaneId: options.originPaneId,
       cwd: options.cwd,
@@ -260,6 +267,9 @@ export async function startAskDestination(
         : buildClaudeLaunchArgs({
             readOnly: true,
             ...(options.model === undefined ? {} : { model: options.model }),
+            ...(options.claudeReceipt === undefined
+              ? {}
+              : { askReceipt: options.claudeReceipt }),
           }),
     );
     return { agentName: options.agentName, paneId };
@@ -279,6 +289,7 @@ export async function launchAsk(
     timeoutMs?: number;
     model?: string;
     maxPanes?: number;
+    claudeReceipt?: ClaudeAskReceiptLaunch;
   },
 ): Promise<AskLaunchResult> {
   const destination = await startAskDestination(target, orchestrator, options);
@@ -452,6 +463,19 @@ async function handleAsk(
 
   const operationId = randomUUID();
   const agentName = `portr-ask-${operationId.slice(0, 8)}`;
+  let claudeReceipt: ClaudeAskReceiptLaunch | undefined;
+  try {
+    claudeReceipt =
+      args.target === "claude"
+        ? prepareClaudeAskReceipt(operationId, prompt)
+        : undefined;
+  } catch (error) {
+    ctx.ui.notify(
+      `Could not prepare Claude Ask hooks: ${errorMessage(error)}`,
+      "error",
+    );
+    return;
+  }
 
   if (!args.wait) {
     if (originSession === undefined) {
@@ -462,6 +486,7 @@ async function handleAsk(
       return;
     }
     ctx.ui.setStatus("portr-ask", `Dispatching ${agentName}`);
+    let receiptHandedToCoordinator = false;
     try {
       const destinationOptions = {
         originPaneId,
@@ -469,6 +494,7 @@ async function handleAsk(
         agentName,
         maxPanes,
         ...(args.model === undefined ? {} : { model: args.model }),
+        ...(claudeReceipt === undefined ? {} : { claudeReceipt }),
       };
       const destination = await startAskDestination(
         args.target,
@@ -485,7 +511,6 @@ async function handleAsk(
         originSession,
         question: sanitizeTransferText(args.question),
         ...(args.noContext ? { noContext: true as const } : {}),
-        ...(args.target === "claude" ? { cwd: ctx.cwd } : {}),
         agentName: destination.agentName,
         paneId: destination.paneId,
         createdAt: now,
@@ -495,6 +520,7 @@ async function handleAsk(
       pi.appendEntry(ASYNC_ASK_OPERATION_ENTRY, operation);
       updateOperationFooter(ctx, operation);
       asyncAsks.monitorFresh(operation, prompt, ctx);
+      receiptHandedToCoordinator = true;
       ctx.ui.notify(
         `Consultation dispatched to ${destination.agentName} (${destination.paneId})`,
         "info",
@@ -502,6 +528,9 @@ async function handleAsk(
     } catch (error) {
       ctx.ui.notify(errorMessage(error), "error");
     } finally {
+      if (!receiptHandedToCoordinator) {
+        cleanupAskReceipt(args.target, operationId, ctx);
+      }
       ctx.ui.setStatus("portr-ask", undefined);
     }
     return;
@@ -517,9 +546,11 @@ async function handleAsk(
       prompt,
       maxPanes,
       ...(args.model === undefined ? {} : { model: args.model }),
+      ...(claudeReceipt === undefined ? {} : { claudeReceipt }),
     };
     launch = await launchAsk(args.target, orchestrator, launchOptions);
   } catch (error) {
+    cleanupAskReceipt(args.target, operationId, ctx);
     ctx.ui.notify(errorMessage(error), "error");
     return;
   } finally {
@@ -532,11 +563,12 @@ async function handleAsk(
       () =>
         launch.target === "pi"
           ? extractPiSessionAnswer(launch.childSession)
-          : extractClaudeSessionAnswer(launch.childSession, ctx.cwd),
+          : extractClaudeReceiptAnswer(operationId, launch.childSession),
       ASK_RESULT_RETRY_TIMEOUT_MS,
       ASK_RESULT_RETRY_INTERVAL_MS,
     );
   } catch (error) {
+    cleanupAskReceipt(args.target, operationId, ctx);
     ctx.ui.notify(
       `Ask result unavailable; destination references: pane ${launch.paneId}, agent name ${launch.agentName}, child session ${launch.childSession}: ${errorMessage(error)}`,
       "error",
@@ -560,10 +592,29 @@ async function handleAsk(
     display: true,
     details: result.details,
   });
+  cleanupAskReceipt(args.target, operationId, ctx);
   ctx.ui.notify(
     `Consultation completed by ${launch.agentName} (${launch.paneId})`,
     "info",
   );
+}
+
+function cleanupAskReceipt(
+  target: AskTarget,
+  operationId: string,
+  ctx: ExtensionCommandContext,
+): void {
+  if (target !== "claude") {
+    return;
+  }
+  try {
+    cleanupClaudeAskReceipt(operationId);
+  } catch (error) {
+    ctx.ui.notify(
+      `Could not clean up Claude Ask receipt: ${errorMessage(error)}`,
+      "warning",
+    );
+  }
 }
 
 function takeToken(input: string): [string, string] {

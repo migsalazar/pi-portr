@@ -5,10 +5,7 @@ import type {
   ExtensionCommandContext,
   SessionEntry,
 } from "@earendil-works/pi-coding-agent";
-import {
-  buildClaudeLaunchArgs,
-  resolveClaudeTranscriptPath,
-} from "../src/claude-target.ts";
+import { buildClaudeLaunchArgs } from "../src/claude-target.ts";
 import {
   launchPass,
   parsePassArguments,
@@ -91,26 +88,6 @@ test("buildClaudeLaunchArgs validates and separates destination model arguments"
   assert.throws(
     () => buildClaudeLaunchArgs({ readOnly: false, model: "  " }),
     /must not be empty/,
-  );
-});
-
-test("resolveClaudeTranscriptPath maps cwd and rejects unsafe session IDs", () => {
-  assert.equal(
-    resolveClaudeTranscriptPath(
-      "/Users/example/project space",
-      "12345678-1234-1234-1234-123456789abc",
-      "/home/example",
-    ),
-    "/home/example/.claude/projects/-Users-example-project-space/12345678-1234-1234-1234-123456789abc.jsonl",
-  );
-  assert.throws(
-    () =>
-      resolveClaudeTranscriptPath(
-        "/tmp/project",
-        "../../unsafe",
-        "/home/example",
-      ),
-    /must be a UUID/,
   );
 });
 

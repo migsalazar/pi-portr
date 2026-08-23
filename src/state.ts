@@ -140,7 +140,6 @@ export function isAsyncAskOperation(
     typeof value.question !== "string" ||
     (value.noContext !== undefined && value.noContext !== true) ||
     (value.cwd !== undefined && !isNonEmptyString(value.cwd)) ||
-    (value.target === "claude" && !isNonEmptyString(value.cwd)) ||
     !isNonEmptyString(value.agentName) ||
     !isNonEmptyString(value.paneId) ||
     !isFiniteTimestamp(value.createdAt) ||

@@ -75,9 +75,9 @@ The setting is stored in Portr's own global `portr.json` under Pi's agent direct
 - Node.js `>=22.19.0`
 - Pi `>=0.84.0`
 - Herdr `>=0.8.2`
-- Claude Code when using the Claude destination
+- Claude Code `>=2.1.196` when using the Claude destination
 
-The current Claude integration was validated with Claude Code `2.1.239`. Result extraction reads Claude Code's local JSONL transcript and validates durable completion markers strictly. That schema is internal and may change between Claude Code versions; incompatible schema drift fails explicitly while preserving pane and session references.
+Claude Ask was validated with Claude Code `2.1.241`. It injects session-local `UserPromptSubmit`, `Stop`, and `StopFailure` hooks through `--settings`, correlates the operation with Claude's public `session_id` and `prompt_id`, and reads `last_assistant_message` from a bounded temporary receipt. It does not modify persistent Claude settings or parse Claude's internal JSONL transcript. Missing, disabled, invalid, or ambiguous hooks fail explicitly while preserving pane and session references.
 
 Ask restrictions are harness-level policy, not an operating-system sandbox.
 

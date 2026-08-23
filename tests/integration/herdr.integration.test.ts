@@ -1,6 +1,5 @@
 import assert from "node:assert/strict";
 import { createHash, randomUUID } from "node:crypto";
-import { readFileSync } from "node:fs";
 import test from "node:test";
 import type { SessionEntry } from "@earendil-works/pi-coding-agent";
 import {
@@ -8,9 +7,11 @@ import {
   retryAskResultExtraction,
 } from "../../src/async-ask.ts";
 import {
-  extractClaudeSessionAnswer,
+  cleanupClaudeAskReceipt,
+  type ClaudeAskReceiptLaunch,
+  extractClaudeReceiptAnswer,
+  prepareClaudeAskReceipt,
   resolveClaudeSessionReference,
-  resolveClaudeTranscriptPath,
 } from "../../src/claude-target.ts";
 import { buildAskPrompt, launchAsk } from "../../src/commands/ask.ts";
 import { buildTransferContext } from "../../src/context.ts";
@@ -37,30 +38,6 @@ const DEFAULT_TIMEOUT_MS = 180_000;
 const BOUNDARY_CONTEXT_CHARACTERS = 60_000;
 const BOUNDARY_PROMPT_CHARACTERS = 90_000;
 const BOUNDARY_CONTEXT_LINES = 14_718;
-
-test("Claude fidelity comparison excludes tool-result records", () => {
-  const expectedPrompt = "BEGIN\nprecomposed é | combining é | non-BMP 🙂\nEND";
-  const transcript = [
-    {
-      type: "user",
-      isSidechain: false,
-      toolUseResult: { status: "completed" },
-      message: {
-        role: "user",
-        content: [{ type: "tool_result", content: "omitted" }],
-      },
-    },
-    {
-      type: "user",
-      isSidechain: false,
-      message: { role: "user", content: expectedPrompt },
-    },
-  ]
-    .map((record) => JSON.stringify(record))
-    .join("\n");
-
-  assertClaudeTranscriptPromptFidelity(transcript, expectedPrompt);
-});
 
 test("Claude selection prompt preserves the intended transfer facts", () => {
   const prompt = buildSelectionPrompt();
@@ -154,6 +131,13 @@ test("live Herdr destination acknowledges one prompt and yields a durable answer
   const marker = `PORTR_INTEGRATION_${operationId.replaceAll("-", "_")}`;
   const agentName = `portr-integration-${operationId.slice(0, 8)}`;
   const prompt = buildPrompt(scenario, marker);
+  const claudeReceipt =
+    target === "claude" && flow === "ask"
+      ? prepareClaudeAskReceipt(operationId, prompt)
+      : undefined;
+  if (claudeReceipt !== undefined) {
+    context.after(() => cleanupClaudeAskReceipt(operationId));
+  }
   const cwd = process.cwd();
   const herdr = new HerdrClient();
   const originPaneId = await herdr.currentPane();
@@ -164,7 +148,9 @@ test("live Herdr destination acknowledges one prompt and yields a durable answer
     agentName,
     prompt,
     timeoutMs,
+    operationId,
     ...(model === undefined ? {} : { model }),
+    ...(claudeReceipt === undefined ? {} : { claudeReceipt }),
   };
   context.diagnostic(`target: ${target}`);
   context.diagnostic(`flow: ${flow}`);
@@ -193,18 +179,18 @@ test("live Herdr destination acknowledges one prompt and yields a durable answer
   context.diagnostic(`session: ${destination.childSession}`);
   context.diagnostic("destination pane intentionally preserved");
 
+  if (target === "claude" && flow === "pass") {
+    context.diagnostic(
+      "Claude Pass delivery validated without result extraction",
+    );
+    return;
+  }
+
   const answer = await extractAnswerWithRetry(
     target,
     destination.childSession,
-    cwd,
+    operationId,
   );
-  if (
-    scenario === "fidelity" ||
-    scenario === "selection" ||
-    scenario === "boundary"
-  ) {
-    assertClaudePromptFidelity(destination.childSession, cwd, prompt);
-  }
   assertScenarioAnswer(scenario, answer, marker);
 });
 
@@ -253,6 +239,9 @@ async function runAskFlow(
     prompt: options.prompt,
     timeoutMs: options.timeoutMs,
     ...(options.model === undefined ? {} : { model: options.model }),
+    ...(options.claudeReceipt === undefined
+      ? {}
+      : { claudeReceipt: options.claudeReceipt }),
   };
   const launched = await launchAsk(target, herdr, launchOptions);
 
@@ -288,13 +277,13 @@ function assertSettledStatus(
 async function extractAnswerWithRetry(
   target: IntegrationTarget,
   childSession: string,
-  cwd: string,
+  operationId: string,
 ): Promise<string> {
   return retryAskResultExtraction(
     () =>
       target === "pi"
         ? extractPiSessionAnswer(childSession)
-        : extractClaudeSessionAnswer(childSession, cwd),
+        : extractClaudeReceiptAnswer(operationId, childSession),
     2_000,
     100,
   );
@@ -359,7 +348,7 @@ function buildPrompt(scenario: IntegrationScenario, marker: string): string {
     return [
       "This is an automated pi-portr integration check.",
       "Do not modify files or call tools.",
-      "Write 120 numbered lines of plain text about durable transcript extraction.",
+      "Write 120 numbered lines of plain text about durable receipt extraction.",
       `Include ${marker} exactly once, on the final line only.`,
     ].join("\n");
   }
@@ -574,80 +563,15 @@ function countOccurrences(text: string, value: string): number {
   return text.split(value).length - 1;
 }
 
-function assertClaudePromptFidelity(
-  sessionId: string,
-  cwd: string,
-  expectedPrompt: string,
-): void {
-  const transcript = readFileSync(
-    resolveClaudeTranscriptPath(cwd, sessionId),
-    "utf8",
-  );
-  assertClaudeTranscriptPromptFidelity(transcript, expectedPrompt);
-}
-
-function assertClaudeTranscriptPromptFidelity(
-  transcript: string,
-  expectedPrompt: string,
-): void {
-  const candidates = transcript
-    .split("\n")
-    .filter((line) => line.trim().length > 0)
-    .map((line) => JSON.parse(line) as unknown)
-    .filter(isRealClaudeUserRecord);
-
-  assert.equal(
-    candidates.length,
-    1,
-    `expected one real Claude user record, found ${candidates.length}`,
-  );
-  const actualPrompt = candidates[0]?.message.content;
-  assert.ok(
-    typeof actualPrompt === "string",
-    "Claude user prompt was not persisted as a string",
-  );
-
-  const expectedBytes = Buffer.from(expectedPrompt, "utf8");
-  const actualBytes = Buffer.from(actualPrompt, "utf8");
-  assert.ok(
-    expectedBytes.equals(actualBytes),
-    [
-      "Claude user prompt differs from the submitted UTF-8 bytes",
-      `expected length ${expectedBytes.length}, actual length ${actualBytes.length}`,
-      `expected SHA-256 ${sha256(expectedBytes)}, actual SHA-256 ${sha256(actualBytes)}`,
-    ].join("; "),
-  );
-}
-
-function isRealClaudeUserRecord(value: unknown): value is {
-  message: { role: "user"; content: unknown };
-} {
-  return (
-    isRecord(value) &&
-    value.type === "user" &&
-    value.isSidechain !== true &&
-    !Object.hasOwn(value, "toolUseResult") &&
-    !Object.hasOwn(value, "sourceToolAssistantUUID") &&
-    isRecord(value.message) &&
-    value.message.role === "user"
-  );
-}
-
-function sha256(value: NodeJS.TypedArray): string {
-  return createHash("sha256").update(value).digest("hex");
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null;
-}
-
 interface LaunchOptions {
   originPaneId: string;
   cwd: string;
   agentName: string;
   prompt: string;
   timeoutMs: number;
+  operationId: string;
   model?: string;
+  claudeReceipt?: ClaudeAskReceiptLaunch;
 }
 
 interface SettledDestination {

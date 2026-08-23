@@ -6,7 +6,8 @@ import type {
 import { AskResultError } from "./ask-result.ts";
 import { updateOperationFooter } from "./commands/operations.ts";
 import {
-  extractClaudeSessionAnswer,
+  cleanupClaudeAskReceipt,
+  extractClaudeReceiptAnswer,
   resolveClaudeSessionReference,
 } from "./claude-target.ts";
 import { boundText, sanitizeTransferText } from "./context.ts";
@@ -281,7 +282,11 @@ function completeAskOperation(
 
 export interface AsyncAskCoordinatorDependencies {
   createOrchestrator(): Orchestrator;
-  extractAnswer?(target: AskTarget, childSession: string, cwd?: string): string;
+  extractAnswer?(
+    target: AskTarget,
+    childSession: string,
+    operationId: string,
+  ): string;
   resultRetryTimeoutMs?: number;
   resultRetryIntervalMs?: number;
 }
@@ -289,15 +294,11 @@ export interface AsyncAskCoordinatorDependencies {
 function defaultExtractAnswer(
   target: AskTarget,
   childSession: string,
-  cwd?: string,
+  operationId: string,
 ): string {
-  if (target === "pi") {
-    return extractPiSessionAnswer(childSession);
-  }
-  if (cwd === undefined) {
-    throw new AskResultError("Claude ask operation did not preserve its cwd");
-  }
-  return extractClaudeSessionAnswer(childSession, cwd);
+  return target === "pi"
+    ? extractPiSessionAnswer(childSession)
+    : extractClaudeReceiptAnswer(operationId, childSession);
 }
 
 export class AsyncAskCoordinator {
@@ -518,6 +519,7 @@ export class AsyncAskCoordinator {
           "warning",
         );
       } else {
+        this.cleanupReceipt(terminal, ctx);
         this.deliver(terminal, ctx, generation);
       }
     } catch (error) {
@@ -603,6 +605,7 @@ export class AsyncAskCoordinator {
     }
     try {
       this.persist(terminal, ctx);
+      this.cleanupReceipt(terminal, ctx);
       this.deliver(terminal, ctx, generation);
     } catch (error) {
       if (this.isCurrent(operation, ctx, generation)) {
@@ -687,7 +690,7 @@ export class AsyncAskCoordinator {
         (this.dependencies.extractAnswer ?? defaultExtractAnswer)(
           operation.target,
           childSession,
-          operation.cwd,
+          operation.operationId,
         ),
       this.dependencies.resultRetryTimeoutMs ?? ASK_RESULT_RETRY_TIMEOUT_MS,
       this.dependencies.resultRetryIntervalMs ?? ASK_RESULT_RETRY_INTERVAL_MS,
@@ -746,6 +749,23 @@ export class AsyncAskCoordinator {
     this.pi.appendEntry(ASYNC_ASK_OPERATION_ENTRY, operation);
     if (ctx !== undefined) {
       updateOperationFooter(ctx, operation);
+    }
+  }
+
+  private cleanupReceipt(
+    operation: AsyncAskOperation,
+    ctx: ExtensionContext,
+  ): void {
+    if (operation.target !== "claude") {
+      return;
+    }
+    try {
+      cleanupClaudeAskReceipt(operation.operationId);
+    } catch (error) {
+      ctx.ui.notify(
+        `Could not clean up Claude Ask receipt: ${errorMessage(error)}`,
+        "warning",
+      );
     }
   }
 

@@ -48,18 +48,21 @@ test("restoreAsyncAskOperations preserves no-context intent and historical absen
   assert.equal(restored.get(historical.operationId)?.noContext, undefined);
 });
 
-test("restoreAsyncAskOperations preserves Claude cwd and rejects missing cwd", () => {
-  const claude = operation({ target: "claude", cwd: "/tmp/project" });
-  const withoutCwd = operation({ target: "claude" });
-  const entries: SessionEntry[] = [
-    customEntry("valid", claude),
-    customEntry("invalid", withoutCwd),
-  ];
+test("restoreAsyncAskOperations accepts Claude receipts without cwd and preserves historical cwd", () => {
+  const claude = operation({ target: "claude" });
+  const historical = operation({
+    operationId: "operation-historical",
+    target: "claude",
+    cwd: "/tmp/project",
+  });
 
-  assert.deepEqual(
-    restoreAsyncAskOperations(entries).get("operation-1"),
-    claude,
-  );
+  const restored = restoreAsyncAskOperations([
+    customEntry("current", claude),
+    customEntry("historical", historical),
+  ]);
+
+  assert.deepEqual(restored.get(claude.operationId), claude);
+  assert.deepEqual(restored.get(historical.operationId), historical);
 });
 
 test("restoreAsyncAskOperations accepts recoverable blocked and historical failed snapshots", () => {
