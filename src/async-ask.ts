@@ -4,6 +4,7 @@ import type {
   SessionEntry,
 } from "@earendil-works/pi-coding-agent";
 import { AskResultError } from "./ask-result.ts";
+import { updateOperationFooter } from "./commands/operations.ts";
 import {
   extractClaudeSessionAnswer,
   resolveClaudeSessionReference,
@@ -31,6 +32,7 @@ import {
 } from "./state.ts";
 
 export const ASK_WAIT_TIMEOUT_MS = 300_000;
+export const ASK_COLLECT_TIMEOUT_MS = 300_000;
 const ASK_RECOVERY_ACTIVITY_WAIT_MS = 5_000;
 export const ASK_RESULT_RETRY_TIMEOUT_MS = 2_000;
 export const ASK_RESULT_RETRY_INTERVAL_MS = 100;
@@ -113,6 +115,7 @@ export class AskLaunchError extends Error {
   readonly agentName: string;
   readonly paneId: string | undefined;
   readonly status: AgentStatus | undefined;
+  readonly session: AgentSessionReference | undefined;
   readonly childSession: string | undefined;
 
   constructor(
@@ -142,6 +145,7 @@ export class AskLaunchError extends Error {
     this.agentName = agentName;
     this.paneId = resolvedPaneId;
     this.status = agent?.status;
+    this.session = agent?.session;
     this.childSession = childSession;
   }
 }
@@ -240,6 +244,38 @@ export function buildAskResultMessage(options: {
       options.originSession === undefined
         ? baseDetails
         : { ...baseDetails, originSession: options.originSession },
+  };
+}
+
+function completeAskOperation(
+  operation: AsyncAskOperation,
+  launch: AskLaunchResult,
+  answer: string,
+  now = Date.now(),
+): AsyncAskOperation {
+  const {
+    failure: _failure,
+    outcome: _outcome,
+    result: _result,
+    ...pending
+  } = operation;
+  const result = buildAskResultMessage({
+    operationId: operation.operationId,
+    target: operation.target,
+    question: operation.question,
+    answer,
+    agentName: operation.agentName,
+    paneId: launch.paneId,
+    childSession: launch.childSession,
+    originSession: operation.originSession,
+  });
+  return {
+    ...pending,
+    status: "completed",
+    paneId: launch.paneId,
+    childSession: launch.childSession,
+    result: { content: result.content, details: { ...result.details } },
+    updatedAt: now,
   };
 }
 
@@ -363,6 +399,28 @@ export class AsyncAskCoordinator {
     this.monitor(operation, ctx, this.generation, prompt);
   }
 
+  collect(operation: AsyncAskOperation, ctx: ExtensionContext): boolean {
+    const originSession = ctx.sessionManager.getSessionFile();
+    if (originSession !== this.originSession) {
+      this.generation += 1;
+      this.active.clear();
+      this.deliveryPending.clear();
+      this.originSession = originSession;
+    }
+    if (this.active.has(operation.operationId)) {
+      return false;
+    }
+
+    const generation = this.generation;
+    this.active.add(operation.operationId);
+    void this.runCollect(operation, ctx, generation).finally(() => {
+      if (generation === this.generation) {
+        this.active.delete(operation.operationId);
+      }
+    });
+    return true;
+  }
+
   private monitor(
     operation: AsyncAskOperation,
     ctx: ExtensionContext,
@@ -420,40 +478,32 @@ export class AsyncAskCoordinator {
       const answer =
         recovered?.answer ??
         (await this.extractAnswer(operation, launch.childSession));
-      const result = buildAskResultMessage({
-        operationId: operation.operationId,
-        target: operation.target,
-        question: operation.question,
-        answer,
-        agentName: operation.agentName,
-        paneId: launch.paneId,
-        childSession: launch.childSession,
-        originSession: operation.originSession,
-      });
-      terminal = {
-        ...operation,
-        status: "completed",
-        paneId: launch.paneId,
-        childSession: launch.childSession,
-        result: { content: result.content, details: { ...result.details } },
-        updatedAt: Date.now(),
-      };
+      terminal = completeAskOperation(operation, launch, answer);
     } catch (error) {
-      if (error instanceof AskLaunchError && error.childSession !== undefined) {
-        childSession = error.childSession;
+      if (error instanceof AskLaunchError) {
+        childSession =
+          resolveAskSessionReference(operation.target, error.session) ??
+          childSession;
       }
       const failure = classifyAsyncAskFailure(error);
-      const failedOperation = {
+      const references = {
         ...operation,
-        status: "failed" as const,
+        ...(error instanceof AskLaunchError && error.paneId !== undefined
+          ? { paneId: error.paneId }
+          : {}),
+        ...(childSession === undefined ? {} : { childSession }),
         updatedAt: Date.now(),
         failure,
-        ...(childSession === undefined ? {} : { childSession }),
       };
-      terminal = {
-        ...failedOperation,
-        result: buildAsyncAskFailureResult(failedOperation, failure),
-      };
+      if (error instanceof AskLaunchError && error.status === "blocked") {
+        terminal = { ...references, status: "blocked" };
+      } else {
+        const failedOperation = { ...references, status: "failed" as const };
+        terminal = {
+          ...failedOperation,
+          result: buildAsyncAskFailureResult(failedOperation, failure),
+        };
+      }
     }
 
     if (!this.isCurrentWorkingOperation(operation, ctx, generation)) {
@@ -461,12 +511,103 @@ export class AsyncAskCoordinator {
     }
 
     try {
-      this.persist(terminal);
-      this.deliver(terminal, ctx, generation);
+      this.persist(terminal, ctx);
+      if (terminal.status === "blocked") {
+        ctx.ui.notify(
+          `Consultation blocked in ${terminal.agentName} (${terminal.paneId}); intervene there, then run /portr-collect ${terminal.operationId}`,
+          "warning",
+        );
+      } else {
+        this.deliver(terminal, ctx, generation);
+      }
     } catch (error) {
       if (this.isCurrent(operation, ctx, generation)) {
         ctx.ui.notify(
           `Could not persist or deliver async ask ${operation.operationId}: ${errorMessage(error)}`,
+          "error",
+        );
+      }
+    }
+  }
+
+  private async runCollect(
+    operation: AsyncAskOperation,
+    ctx: ExtensionContext,
+    generation: number,
+  ): Promise<void> {
+    let paneId = operation.paneId;
+    let childSession = operation.childSession;
+    let terminal: AsyncAskOperation;
+
+    try {
+      const orchestrator = this.dependencies.createOrchestrator();
+      let agent = await orchestrator.getAgent(operation.agentName);
+      paneId = agent.paneId;
+      childSession =
+        resolveAskSessionReference(operation.target, agent.session) ??
+        childSession;
+      if (agent.status === "working") {
+        agent = await orchestrator.waitForAgent(
+          operation.agentName,
+          ASK_COLLECT_TIMEOUT_MS,
+          ["idle", "done", "blocked", "unknown"],
+        );
+        paneId = agent.paneId;
+        childSession =
+          resolveAskSessionReference(operation.target, agent.session) ??
+          childSession;
+      }
+
+      const launch = resolveSettledAskAgent(operation.target, operation, agent);
+      const answer = await this.extractAnswer(operation, launch.childSession);
+      terminal = completeAskOperation(operation, launch, answer);
+    } catch (error) {
+      if (error instanceof AskLaunchError) {
+        paneId = error.paneId ?? paneId;
+        childSession =
+          resolveAskSessionReference(operation.target, error.session) ??
+          childSession;
+      }
+      const blocked: AsyncAskOperation = {
+        ...operation,
+        status: "blocked",
+        paneId,
+        ...(childSession === undefined ? {} : { childSession }),
+        failure: classifyAsyncAskFailure(error),
+        updatedAt: Date.now(),
+      };
+      if (
+        !this.isCurrentOperationStatus(operation, "blocked", ctx, generation)
+      ) {
+        return;
+      }
+      try {
+        this.persist(blocked, ctx);
+        ctx.ui.notify(
+          `Collection incomplete for ${operation.operationId}; operation remains blocked: ${blocked.failure?.message ?? "unknown failure"}`,
+          "warning",
+        );
+      } catch (persistError) {
+        if (this.isCurrent(operation, ctx, generation)) {
+          ctx.ui.notify(
+            `Could not persist blocked ask ${operation.operationId}: ${errorMessage(persistError)}`,
+            "error",
+          );
+        }
+      }
+      return;
+    }
+
+    if (!this.isCurrentOperationStatus(operation, "blocked", ctx, generation)) {
+      return;
+    }
+    try {
+      this.persist(terminal, ctx);
+      this.deliver(terminal, ctx, generation);
+    } catch (error) {
+      if (this.isCurrent(operation, ctx, generation)) {
+        ctx.ui.notify(
+          `Could not persist or deliver collected ask ${operation.operationId}: ${errorMessage(error)}`,
           "error",
         );
       }
@@ -581,7 +722,7 @@ export class AsyncAskCoordinator {
           );
         },
         persist: (delivered) => {
-          this.persist(delivered);
+          this.persist(delivered, ctx);
         },
       },
     );
@@ -601,8 +742,11 @@ export class AsyncAskCoordinator {
     }
   }
 
-  private persist(operation: AsyncAskOperation): void {
+  private persist(operation: AsyncAskOperation, ctx?: ExtensionContext): void {
     this.pi.appendEntry(ASYNC_ASK_OPERATION_ENTRY, operation);
+    if (ctx !== undefined) {
+      updateOperationFooter(ctx, operation);
+    }
   }
 
   private isCurrentWorkingOperation(
@@ -610,11 +754,20 @@ export class AsyncAskCoordinator {
     ctx: ExtensionContext,
     generation: number,
   ): boolean {
+    return this.isCurrentOperationStatus(operation, "working", ctx, generation);
+  }
+
+  private isCurrentOperationStatus(
+    operation: AsyncAskOperation,
+    status: AsyncAskOperation["status"],
+    ctx: ExtensionContext,
+    generation: number,
+  ): boolean {
     return (
       this.isCurrent(operation, ctx, generation) &&
       restoreAsyncAskOperations(ctx.sessionManager.getBranch()).get(
         operation.operationId,
-      )?.status === "working"
+      )?.status === status
     );
   }
 

@@ -1,5 +1,10 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import type {
+  ExtensionAPI,
+  ExtensionCommandContext,
+  SessionEntry,
+} from "@earendil-works/pi-coding-agent";
 import {
   buildClaudeLaunchArgs,
   resolveClaudeTranscriptPath,
@@ -9,13 +14,16 @@ import {
   parsePassArguments,
   PassLaunchError,
   PassUsageError,
+  registerPassCommand,
 } from "../src/commands/pass.ts";
 import {
   HerdrClient,
   type HerdrCommandRunner,
   type HerdrInvocation,
 } from "../src/herdr.ts";
+import type { Orchestrator } from "../src/orchestrator.ts";
 import { buildPiLaunchArgs } from "../src/pi-target.ts";
+import { PASS_RECEIPT_ENTRY, restorePassReceipts } from "../src/state.ts";
 
 test("parsePassArguments parses a Pi goal and optional model", () => {
   assert.deepEqual(
@@ -136,6 +144,7 @@ for (const targetCase of [
     assert.deepEqual(result, {
       agentName: targetCase.agentName,
       paneId: "w1:p2",
+      focusStatus: "focused",
     });
     assert.deepEqual(
       calls.map((call) => call.args),
@@ -217,7 +226,11 @@ test("launchPass preserves user focus after the origin loses focus", async () =>
       agentName: "portr-pass-test",
       prompt: "Approved handoff",
     }),
-    { agentName: "portr-pass-test", paneId: "w1:p2" },
+    {
+      agentName: "portr-pass-test",
+      paneId: "w1:p2",
+      focusStatus: "skipped",
+    },
   );
   assert.equal(
     calls.some((call) => call.args[1] === "focus"),
@@ -263,7 +276,11 @@ test("launchPass preserves user focus when origin focus cannot be verified", asy
       agentName: "portr-pass-test",
       prompt: "Approved handoff",
     }),
-    { agentName: "portr-pass-test", paneId: "w1:p2" },
+    {
+      agentName: "portr-pass-test",
+      paneId: "w1:p2",
+      focusStatus: "skipped",
+    },
   );
   assert.equal(
     calls.some((call) => call.args[1] === "focus"),
@@ -355,6 +372,186 @@ test("launchPass preserves a blocked destination without focusing", async () => 
     false,
   );
 });
+
+test("portr-pass persists the exact approved prompt and useful transitions", async () => {
+  const run = await runPassCommand();
+  const receipts = run.entries.flatMap((entry) =>
+    entry.type === "custom" && entry.customType === PASS_RECEIPT_ENTRY
+      ? [entry.data as { deliveryStatus: string; focusStatus: string }]
+      : [],
+  );
+  const latest = [...restorePassReceipts(run.entries).values()][0];
+
+  assert.deepEqual(
+    receipts.map((receipt) => [receipt.deliveryStatus, receipt.focusStatus]),
+    [
+      ["approved", "not_attempted"],
+      ["approved", "not_attempted"],
+      ["delivered", "not_attempted"],
+      ["delivered", "focused"],
+    ],
+  );
+  assert.equal(latest?.approvedPrompt, "# Approved handoff\n\nExact text");
+  assert.equal(latest?.goal, "continue the MVP");
+  assert.equal(latest?.paneId, "w1:p2");
+  assert.equal(latest?.childSession, "/tmp/child.jsonl");
+  assert.equal(latest?.launchStage, "focus");
+});
+
+test("portr-pass cancellation, invalid payload, and in-memory origin create no receipt", async () => {
+  const cancelled = await runPassCommand({ approvedPrompt: undefined });
+  const base64 = await runPassCommand({
+    approvedPrompt: "data:image/png;base64,AAABBB==",
+  });
+  const inMemory = await runPassCommand({ originSession: undefined });
+
+  assert.equal(cancelled.entries.length, 0);
+  assert.equal(base64.entries.length, 0);
+  assert.match(base64.notifications.at(-1) ?? "", /base64/);
+  assert.equal(inMemory.entries.length, 0);
+  assert.equal(inMemory.customCalls, 0);
+  assert.match(inMemory.notifications.at(-1) ?? "", /persisted origin/);
+});
+
+for (const failureStage of ["split", "start", "prompt", "focus"] as const) {
+  test(`portr-pass preserves a receipt after ${failureStage} failure`, async () => {
+    const run = await runPassCommand({ failureStage });
+    const receipt = [...restorePassReceipts(run.entries).values()][0];
+
+    assert.equal(receipt?.launchStage, failureStage);
+    assert.match(receipt?.failure?.message ?? "", /failed|rejected/);
+    if (failureStage === "split") {
+      assert.equal(receipt?.paneId, undefined);
+    } else {
+      assert.equal(receipt?.paneId, "w1:p2");
+    }
+    if (failureStage === "focus") {
+      assert.equal(receipt?.deliveryStatus, "delivered");
+      assert.equal(receipt?.focusStatus, "failed");
+    } else {
+      assert.equal(receipt?.deliveryStatus, "failed");
+      assert.equal(receipt?.focusStatus, "not_attempted");
+    }
+  });
+}
+
+async function runPassCommand(
+  options: {
+    approvedPrompt?: string | undefined;
+    originSession?: string | undefined;
+    failureStage?: "split" | "start" | "prompt" | "focus";
+  } = {},
+): Promise<{
+  entries: SessionEntry[];
+  notifications: string[];
+  customCalls: number;
+}> {
+  const entries: SessionEntry[] = [];
+  const contextEntries: SessionEntry[] = [
+    {
+      type: "message",
+      id: "context-user",
+      parentId: null,
+      timestamp: "2026-01-01T00:00:00.000Z",
+      message: {
+        role: "user",
+        content: "Continue this implementation",
+        timestamp: Date.parse("2026-01-01T00:00:00.000Z"),
+      },
+    },
+  ];
+  const notifications: string[] = [];
+  let customCalls = 0;
+  let entryIndex = 0;
+  let handler:
+    | ((args: string, ctx: ExtensionCommandContext) => Promise<void>)
+    | undefined;
+  const pi = {
+    registerCommand: (
+      _name: string,
+      command: {
+        handler: (args: string, ctx: ExtensionCommandContext) => Promise<void>;
+      },
+    ) => {
+      handler = command.handler;
+    },
+    appendEntry: (customType: string, data?: unknown) => {
+      entryIndex += 1;
+      entries.push({
+        type: "custom",
+        id: `entry-${entryIndex}`,
+        parentId: null,
+        timestamp: new Date().toISOString(),
+        customType,
+        data,
+      });
+    },
+  } as unknown as ExtensionAPI;
+  const orchestrator = {
+    currentPane: async () => "w1:p1",
+    splitPane: async () => {
+      if (options.failureStage === "split") {
+        throw new Error("split failed");
+      }
+      return "w1:p2";
+    },
+    startAgent: async () => {
+      if (options.failureStage === "start") {
+        throw new Error("start failed");
+      }
+    },
+    promptUntilWorking: async () => {
+      if (options.failureStage === "prompt") {
+        throw new Error("prompt failed");
+      }
+      return {
+        status: "working" as const,
+        paneId: "w1:p2",
+        session: {
+          agent: "pi" as const,
+          kind: "path" as const,
+          value: "/tmp/child.jsonl",
+        },
+      };
+    },
+    paneIsFocused: async () => true,
+    focus: async () => {
+      if (options.failureStage === "focus") {
+        throw new Error("focus failed");
+      }
+    },
+  } as unknown as Orchestrator;
+  registerPassCommand(pi, () => orchestrator);
+  const hasApprovedPrompt = Object.hasOwn(options, "approvedPrompt");
+  const approvedPrompt = hasApprovedPrompt
+    ? options.approvedPrompt
+    : "# Approved handoff\n\nExact text";
+  const ctx = {
+    mode: "tui",
+    cwd: "/tmp/project",
+    model: { provider: "test", id: "model" },
+    sessionManager: {
+      getSessionFile: () =>
+        Object.hasOwn(options, "originSession")
+          ? options.originSession
+          : "/tmp/origin.jsonl",
+      getEntries: () => contextEntries,
+      getLeafId: () => "context-user",
+    },
+    modelRegistry: {},
+    ui: {
+      notify: (message: string) => notifications.push(message),
+      custom: async () => {
+        customCalls += 1;
+        return { status: "ok", text: "Generated handoff" };
+      },
+      editor: async () => approvedPrompt,
+    },
+  } as unknown as ExtensionCommandContext;
+
+  await handler?.("pi continue the MVP", ctx);
+  return { entries, notifications, customCalls };
+}
 
 function createPassRunner(calls: HerdrInvocation[]): HerdrCommandRunner {
   return async (invocation) => {

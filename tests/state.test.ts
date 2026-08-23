@@ -10,7 +10,10 @@ import {
   ASYNC_ASK_OPERATION_ENTRY,
   ASYNC_ASK_RESULT_MESSAGE,
   type AsyncAskOperation,
+  PASS_RECEIPT_ENTRY,
+  type PassReceipt,
   restoreAsyncAskOperations,
+  restorePassReceipts,
 } from "../src/state.ts";
 
 test("restoreAsyncAskOperations keeps the latest valid branch snapshot", () => {
@@ -33,6 +36,18 @@ test("restoreAsyncAskOperations keeps the latest valid branch snapshot", () => {
   assert.deepEqual(restored.get("operation-1"), completed);
 });
 
+test("restoreAsyncAskOperations preserves no-context intent and historical absence", () => {
+  const noContext = operation({ noContext: true });
+  const historical = operation({ operationId: "operation-historical" });
+  const restored = restoreAsyncAskOperations([
+    customEntry("no-context", noContext),
+    customEntry("historical", historical),
+  ]);
+
+  assert.equal(restored.get(noContext.operationId)?.noContext, true);
+  assert.equal(restored.get(historical.operationId)?.noContext, undefined);
+});
+
 test("restoreAsyncAskOperations preserves Claude cwd and rejects missing cwd", () => {
   const claude = operation({ target: "claude", cwd: "/tmp/project" });
   const withoutCwd = operation({ target: "claude" });
@@ -44,6 +59,46 @@ test("restoreAsyncAskOperations preserves Claude cwd and rejects missing cwd", (
   assert.deepEqual(
     restoreAsyncAskOperations(entries).get("operation-1"),
     claude,
+  );
+});
+
+test("restoreAsyncAskOperations accepts recoverable blocked and historical failed snapshots", () => {
+  const blocked = operation({
+    status: "blocked",
+    failure: { reason: "blocked", message: "needs approval" },
+  });
+  const historical = operation({
+    operationId: "operation-historical",
+    status: "failed",
+    failure: { reason: "blocked", message: "needs approval" },
+    result: storedResult(),
+  });
+  const restored = restoreAsyncAskOperations([
+    customEntry("blocked", blocked),
+    customEntry("historical", historical),
+  ]);
+
+  assert.deepEqual(restored.get(blocked.operationId), blocked);
+  assert.deepEqual(restored.get(historical.operationId), historical);
+});
+
+test("restorePassReceipts keeps the latest valid receipt", () => {
+  const approved = passReceipt();
+  const delivered = passReceipt({
+    deliveryStatus: "delivered",
+    paneId: "w1:p2",
+    launchStage: "prompt",
+    updatedAt: 2,
+  });
+  const entries: SessionEntry[] = [
+    passEntry("approved", approved),
+    passEntry("invalid", { ...approved, approvedPrompt: "" }),
+    passEntry("delivered", delivered),
+  ];
+
+  assert.deepEqual(
+    restorePassReceipts(entries).get(approved.operationId),
+    delivered,
   );
 });
 
@@ -143,6 +198,25 @@ function operation(
   };
 }
 
+function passReceipt(overrides: Partial<PassReceipt> = {}): PassReceipt {
+  return {
+    version: 1,
+    kind: "pass",
+    operationId: "pass-1",
+    originSession: "/tmp/origin.jsonl",
+    target: "pi",
+    goal: "Continue the work",
+    approvedPrompt: "# Handoff\n\nContinue the work",
+    deliveryStatus: "approved",
+    focusStatus: "not_attempted",
+    launchStage: "approved",
+    agentName: "portr-pass-test",
+    createdAt: 1,
+    updatedAt: 1,
+    ...overrides,
+  };
+}
+
 function storedResult(): {
   content: string;
   details: Record<string, unknown>;
@@ -154,12 +228,24 @@ function storedResult(): {
 }
 
 function customEntry(id: string, data: unknown): SessionEntry {
+  return customEntryOfType(id, ASYNC_ASK_OPERATION_ENTRY, data);
+}
+
+function passEntry(id: string, data: unknown): SessionEntry {
+  return customEntryOfType(id, PASS_RECEIPT_ENTRY, data);
+}
+
+function customEntryOfType(
+  id: string,
+  customType: string,
+  data: unknown,
+): SessionEntry {
   return {
     type: "custom",
     id,
     parentId: null,
     timestamp: "2026-01-01T00:00:00.000Z",
-    customType: ASYNC_ASK_OPERATION_ENTRY,
+    customType,
     data,
   };
 }

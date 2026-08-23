@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import type {
   ExtensionAPI,
+  ExtensionCommandContext,
   ExtensionContext,
   SessionEntry,
 } from "@earendil-works/pi-coding-agent";
@@ -21,11 +22,14 @@ import {
   buildAskPrompt,
   launchAsk,
   parseAskArguments,
+  parseCollectOperationId,
+  registerAskCommand,
 } from "../src/commands/ask.ts";
 import {
   extractFinalPiAssistantAnswer as extractFinalAssistantAnswer,
   resolvePiSessionReference,
 } from "../src/pi-target.ts";
+import type { Orchestrator } from "../src/orchestrator.ts";
 import {
   HerdrClient,
   type HerdrCommandRunner,
@@ -47,6 +51,7 @@ test("parseAskArguments parses blocking Pi options", () => {
       question: "inspect the API",
       wait: true,
       preview: true,
+      noContext: false,
       model: "anthropic/claude-sonnet",
     },
   );
@@ -58,6 +63,7 @@ test("parseAskArguments preserves question flags after a separator", () => {
     question: "explain --strict mode",
     wait: true,
     preview: false,
+    noContext: false,
   });
 });
 
@@ -77,6 +83,39 @@ test("parseAskArguments rejects invalid or duplicate options", () => {
   );
 });
 
+test("parseAskArguments parses --no-context in any option position", () => {
+  assert.deepEqual(
+    parseAskArguments(
+      "claude --preview --no-context --model sonnet ask independently",
+    ),
+    {
+      target: "claude",
+      question: "ask independently",
+      wait: false,
+      preview: true,
+      noContext: true,
+      model: "sonnet",
+    },
+  );
+  assert.throws(
+    () => parseAskArguments("pi --no-context --no-context question"),
+    /only be provided once/,
+  );
+  assert.deepEqual(parseAskArguments("pi --no-context -- ask --strict"), {
+    target: "pi",
+    question: "ask --strict",
+    wait: false,
+    preview: false,
+    noContext: true,
+  });
+});
+
+test("parseCollectOperationId requires one exact ID", () => {
+  assert.equal(parseCollectOperationId(" operation-1 "), "operation-1");
+  assert.throws(() => parseCollectOperationId(""), /Usage/);
+  assert.throws(() => parseCollectOperationId("operation 1"), /Usage/);
+});
+
 test("buildAskPrompt separates and sanitizes context and question", () => {
   const prompt = buildAskPrompt(
     "User: We use SessionManager.open().",
@@ -93,6 +132,71 @@ test("buildAskPrompt separates and sanitizes context and question", () => {
 });
 
 // Defense in depth only: read-only behavior still comes from harness policy.
+test("buildAskPrompt marks an intentionally empty context", () => {
+  assert.match(
+    buildAskPrompt("", "Answer independently"),
+    /\(No transferable origin context was available\.\)/,
+  );
+});
+
+test("portr-ask --no-context skips context extraction and persists intent", async () => {
+  let handler:
+    | ((args: string, ctx: ExtensionCommandContext) => Promise<void>)
+    | undefined;
+  let submittedPrompt: string | undefined;
+  const appended: unknown[] = [];
+  const pi = {
+    on: () => undefined,
+    registerCommand: (
+      name: string,
+      command: {
+        handler: (args: string, ctx: ExtensionCommandContext) => Promise<void>;
+      },
+    ) => {
+      if (name === "portr-ask") {
+        handler = command.handler;
+      }
+    },
+    appendEntry: (_customType: string, data?: unknown) => appended.push(data),
+  } as unknown as ExtensionAPI;
+  const orchestrator = {
+    currentPane: async () => "w1:p1",
+    splitPane: async () => "w1:p2",
+    startAgent: async () => undefined,
+    promptAndWait: async (_agentName: string, prompt: string) => {
+      submittedPrompt = prompt;
+      return new Promise<never>(() => undefined);
+    },
+  } as unknown as Orchestrator;
+  registerAskCommand(pi, () => orchestrator);
+  const ctx = {
+    mode: "tui",
+    cwd: "/tmp/project",
+    sessionManager: {
+      getSessionFile: () => "/tmp/origin.jsonl",
+      getEntries: () => {
+        throw new Error("context extraction must not run");
+      },
+      getLeafId: () => {
+        throw new Error("context extraction must not run");
+      },
+      getBranch: () => [],
+    },
+    ui: {
+      notify: () => undefined,
+      setStatus: () => undefined,
+    },
+  } as unknown as ExtensionCommandContext;
+
+  await handler?.("pi --no-context answer independently", ctx);
+
+  assert.match(
+    submittedPrompt ?? "",
+    /\(No transferable origin context was available\.\)/,
+  );
+  assert.equal((appended[0] as AsyncAskOperation | undefined)?.noContext, true);
+});
+
 test("buildAskPrompt block-quotes structural headings in origin context", () => {
   const prompt = buildAskPrompt(
     [
@@ -871,18 +975,21 @@ test("AsyncAskCoordinator preserves destination references when recovery is bloc
   });
 
   coordinator.reconcile(runtimeContext(entries));
-  await waitFor(() => sent.length === 1);
+  await waitFor(
+    () =>
+      restoreAsyncAskOperations(entries).get(operation.operationId)?.status ===
+      "blocked",
+  );
 
   const restored = restoreAsyncAskOperations(entries).get(
     operation.operationId,
   );
-  assert.equal(restored?.status, "failed");
+  assert.equal(restored?.status, "blocked");
   assert.equal(restored?.failure?.reason, "blocked");
   assert.equal(restored?.paneId, "w1:p2");
   assert.equal(restored?.agentName, "portr-ask-test");
   assert.equal(restored?.childSession, "/tmp/child.jsonl");
-  const result = sent[0]?.message as { content?: string };
-  assert.match(result.content ?? "", /child session \/tmp\/child\.jsonl/);
+  assert.equal(sent.length, 0);
 });
 
 test("AsyncAskCoordinator recovers completed output after its deadline", async () => {
@@ -949,6 +1056,129 @@ test("AsyncAskCoordinator waits through a recovered pre-prompt idle state", asyn
     false,
   );
 });
+
+test("AsyncAskCoordinator collects a blocked result without replay", async () => {
+  const operation = blockedOperation();
+  const entries: SessionEntry[] = [operationEntry("blocked", operation)];
+  const sent: Array<{ message: unknown; options: unknown }> = [];
+  const calls: HerdrInvocation[] = [];
+  const runner: HerdrCommandRunner = async (invocation) => {
+    calls.push(invocation);
+    return agentOutput("idle");
+  };
+  const coordinator = new AsyncAskCoordinator(runtimeApi(entries, sent), {
+    createOrchestrator: () => new HerdrClient(runner, { HERDR_ENV: "1" }),
+    extractAnswer: () => "Answer after intervention",
+  });
+
+  assert.equal(coordinator.collect(operation, runtimeContext(entries)), true);
+  await waitFor(() => sent.length === 1);
+
+  assert.deepEqual(
+    calls.map((call) => call.args[1]),
+    ["get"],
+  );
+  assert.equal(
+    calls.some((call) => call.args[1] === "prompt"),
+    false,
+  );
+  assert.equal(
+    restoreAsyncAskOperations(entries).get(operation.operationId)?.status,
+    "completed",
+  );
+});
+
+test("AsyncAskCoordinator keeps an unresolved collection blocked", async () => {
+  const operation = blockedOperation();
+  const entries: SessionEntry[] = [operationEntry("blocked", operation)];
+  const sent: Array<{ message: unknown; options: unknown }> = [];
+  const calls: HerdrInvocation[] = [];
+  const runner: HerdrCommandRunner = async (invocation) => {
+    calls.push(invocation);
+    return agentOutput("unknown");
+  };
+  const coordinator = new AsyncAskCoordinator(runtimeApi(entries, sent), {
+    createOrchestrator: () => new HerdrClient(runner, { HERDR_ENV: "1" }),
+    extractAnswer: () => "must not extract",
+  });
+
+  coordinator.collect(operation, runtimeContext(entries));
+  await waitFor(() => entries.length === 2);
+
+  const restored = restoreAsyncAskOperations(entries).get(
+    operation.operationId,
+  );
+  assert.equal(restored?.status, "blocked");
+  assert.equal(restored?.failure?.reason, "ambiguous_status");
+  assert.equal(sent.length, 0);
+  assert.deepEqual(
+    calls.map((call) => call.args[1]),
+    ["get"],
+  );
+});
+
+test("AsyncAskCoordinator collect waits independently of the original deadline", async () => {
+  const operation = blockedOperation({ deadlineAt: Date.now() - 1 });
+  const entries: SessionEntry[] = [operationEntry("blocked", operation)];
+  const sent: Array<{ message: unknown; options: unknown }> = [];
+  const calls: HerdrInvocation[] = [];
+  const runner: HerdrCommandRunner = async (invocation) => {
+    calls.push(invocation);
+    return agentOutput(invocation.args[1] === "get" ? "working" : "idle");
+  };
+  const coordinator = new AsyncAskCoordinator(runtimeApi(entries, sent), {
+    createOrchestrator: () => new HerdrClient(runner, { HERDR_ENV: "1" }),
+    extractAnswer: () => "Late durable answer",
+  });
+
+  coordinator.collect(operation, runtimeContext(entries));
+  await waitFor(() => sent.length === 1);
+
+  assert.deepEqual(
+    calls.map((call) => call.args[1]),
+    ["get", "wait"],
+  );
+  assert.equal(
+    calls.some((call) => call.args[1] === "prompt"),
+    false,
+  );
+});
+
+test("AsyncAskCoordinator allows only one concurrent collect", async () => {
+  const operation = blockedOperation();
+  const entries: SessionEntry[] = [operationEntry("blocked", operation)];
+  const sent: Array<{ message: unknown; options: unknown }> = [];
+  let settle:
+    | ((output: { stdout: string; stderr: string }) => void)
+    | undefined;
+  const runner: HerdrCommandRunner = () =>
+    new Promise((resolve) => {
+      settle = resolve;
+    });
+  const coordinator = new AsyncAskCoordinator(runtimeApi(entries, sent), {
+    createOrchestrator: () => new HerdrClient(runner, { HERDR_ENV: "1" }),
+    extractAnswer: () => "must not extract",
+  });
+  const ctx = runtimeContext(entries);
+
+  assert.equal(coordinator.collect(operation, ctx), true);
+  await waitFor(() => settle !== undefined);
+  assert.equal(coordinator.collect(operation, ctx), false);
+  settle?.(agentOutput("blocked"));
+  await waitFor(() => entries.length === 2);
+  assert.equal(sent.length, 0);
+});
+
+function blockedOperation(
+  overrides: Partial<AsyncAskOperation> = {},
+): AsyncAskOperation {
+  return {
+    ...workingOperation(),
+    status: "blocked",
+    failure: { reason: "blocked", message: "needs intervention" },
+    ...overrides,
+  };
+}
 
 function workingOperation(): AsyncAskOperation {
   const now = Date.now();
@@ -1017,7 +1247,7 @@ function runtimeContext(
       getSessionFile,
       getBranch: () => entries,
     },
-    ui: { notify: () => undefined },
+    ui: { notify: () => undefined, setStatus: () => undefined },
   } as unknown as ExtensionContext;
 }
 
@@ -1035,7 +1265,9 @@ function operationEntry(
   };
 }
 
-function agentOutput(status: "idle" | "working" | "blocked"): {
+function agentOutput(
+  status: "idle" | "working" | "blocked" | "done" | "unknown",
+): {
   stdout: string;
   stderr: string;
 } {

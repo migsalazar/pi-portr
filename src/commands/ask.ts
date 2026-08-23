@@ -28,6 +28,7 @@ import {
 } from "../context.ts";
 import type { CreateOrchestrator, Orchestrator } from "../orchestrator.ts";
 import { buildPiLaunchArgs, extractPiSessionAnswer } from "../pi-target.ts";
+import { resolveAskOperation, updateOperationFooter } from "./operations.ts";
 import {
   ASYNC_ASK_OPERATION_ENTRY,
   ASYNC_ASK_RESULT_MESSAGE,
@@ -43,6 +44,7 @@ export interface AskArguments {
   question: string;
   wait: boolean;
   preview: boolean;
+  noContext: boolean;
   model?: string;
 }
 
@@ -60,9 +62,11 @@ export function registerAskCommand(
   const asyncAsks = new AsyncAskCoordinator(pi, { createOrchestrator });
 
   pi.on("session_start", (_event, ctx) => {
+    updateOperationFooter(ctx);
     asyncAsks.reconcile(ctx);
   });
   pi.on("session_tree", (_event, ctx) => {
+    updateOperationFooter(ctx);
     asyncAsks.reconcile(ctx);
   });
   pi.on("session_shutdown", () => {
@@ -78,13 +82,19 @@ export function registerAskCommand(
       await handleAsk(pi, asyncAsks, createOrchestrator, args, ctx);
     },
   });
+  pi.registerCommand("portr-collect", {
+    description: "Collect a previously blocked asynchronous ask",
+    handler: async (args, ctx) => {
+      handleCollect(asyncAsks, args, ctx);
+    },
+  });
 }
 
 export function parseAskArguments(input: string): AskArguments {
   const [targetToken, afterTarget] = takeToken(input.trim());
   if (targetToken !== "pi" && targetToken !== "claude") {
     throw new AskUsageError(
-      "Usage: /portr-ask <pi|claude> [--model <model>] [--preview] [--wait] <question>",
+      "Usage: /portr-ask <pi|claude> [--model <model>] [--preview] [--no-context] [--wait] <question>",
     );
   }
 
@@ -92,6 +102,7 @@ export function parseAskArguments(input: string): AskArguments {
   let model: string | undefined;
   let wait = false;
   let preview = false;
+  let noContext = false;
 
   while (remainder.startsWith("--")) {
     if (remainder === "--") {
@@ -117,6 +128,14 @@ export function parseAskArguments(input: string): AskArguments {
         throw new AskUsageError("--preview may only be provided once");
       }
       preview = true;
+      remainder = afterOption.trimStart();
+      continue;
+    }
+    if (option === "--no-context") {
+      if (noContext) {
+        throw new AskUsageError("--no-context may only be provided once");
+      }
+      noContext = true;
       remainder = afterOption.trimStart();
       continue;
     }
@@ -150,8 +169,17 @@ export function parseAskArguments(input: string): AskArguments {
     question,
     wait,
     preview,
+    noContext,
   } satisfies Omit<AskArguments, "model">;
   return model === undefined ? parsed : { ...parsed, model };
+}
+
+export function parseCollectOperationId(input: string): string {
+  const tokens = input.trim().split(/\s+/).filter(Boolean);
+  if (tokens.length !== 1) {
+    throw new AskUsageError("Usage: /portr-collect <operation-id>");
+  }
+  return tokens[0] ?? "";
 }
 
 export function buildAskPrompt(context: string, question: string): string {
@@ -256,6 +284,53 @@ export async function launchAsk(
   }
 }
 
+function handleCollect(
+  asyncAsks: AsyncAskCoordinator,
+  rawArguments: string,
+  ctx: ExtensionCommandContext,
+): void {
+  if (ctx.mode !== "tui") {
+    ctx.ui.notify("/portr-collect requires interactive mode", "error");
+    return;
+  }
+
+  let operationId: string;
+  try {
+    operationId = parseCollectOperationId(rawArguments);
+  } catch (error) {
+    ctx.ui.notify(errorMessage(error), "error");
+    return;
+  }
+  const resolution = resolveAskOperation(
+    ctx.sessionManager.getBranch(),
+    ctx.sessionManager.getSessionFile(),
+    operationId,
+  );
+  if (resolution.status !== "found") {
+    const detail =
+      resolution.status === "other_origin"
+        ? "belongs to another origin session"
+        : "has no valid durable snapshot on the active branch";
+    ctx.ui.notify(`Ask operation ${operationId} ${detail}`, "error");
+    return;
+  }
+  if (resolution.operation.status !== "blocked") {
+    ctx.ui.notify(
+      `Ask operation ${operationId} is ${resolution.operation.status}, not blocked`,
+      "error",
+    );
+    return;
+  }
+  if (!asyncAsks.collect(resolution.operation, ctx)) {
+    ctx.ui.notify(
+      `Ask operation ${operationId} is already being collected`,
+      "info",
+    );
+    return;
+  }
+  ctx.ui.notify(`Collecting blocked ask ${operationId} without replay`, "info");
+}
+
 async function handleAsk(
   pi: ExtensionAPI,
   asyncAsks: AsyncAskCoordinator,
@@ -297,14 +372,22 @@ async function handleAsk(
     return;
   }
 
-  const context = buildTransferContext(ctx.sessionManager);
-  const truncationNote = context.truncated ? " (earlier context omitted)" : "";
-  ctx.ui.notify(
-    `Preparing consultation with ${context.text.length} context characters${truncationNote}`,
-    "info",
-  );
+  let contextText = "";
+  if (args.noContext) {
+    ctx.ui.notify("Preparing consultation without origin context", "info");
+  } else {
+    const context = buildTransferContext(ctx.sessionManager);
+    contextText = context.text;
+    const truncationNote = context.truncated
+      ? " (earlier context omitted)"
+      : "";
+    ctx.ui.notify(
+      `Preparing consultation with ${context.text.length} context characters${truncationNote}`,
+      "info",
+    );
+  }
 
-  let prompt = buildAskPrompt(context.text, args.question);
+  let prompt = buildAskPrompt(contextText, args.question);
   if (args.preview) {
     const approvedPrompt = await ctx.ui.editor(
       "Review consultation prompt — save to continue",
@@ -324,6 +407,13 @@ async function handleAsk(
   if (prompt.length > MAX_ASK_PROMPT_CHARACTERS) {
     ctx.ui.notify(
       `Consultation prompt exceeds the ${MAX_ASK_PROMPT_CHARACTERS}-character limit`,
+      "error",
+    );
+    return;
+  }
+  if (sanitizeTransferText(prompt) !== prompt) {
+    ctx.ui.notify(
+      "Consultation prompt must not contain base64 payloads",
       "error",
     );
     return;
@@ -361,7 +451,8 @@ async function handleAsk(
         target: args.target,
         status: "working",
         originSession,
-        question: args.question,
+        question: sanitizeTransferText(args.question),
+        ...(args.noContext ? { noContext: true as const } : {}),
         ...(args.target === "claude" ? { cwd: ctx.cwd } : {}),
         agentName: destination.agentName,
         paneId: destination.paneId,
@@ -370,6 +461,7 @@ async function handleAsk(
         deadlineAt: now + ASK_WAIT_TIMEOUT_MS,
       };
       pi.appendEntry(ASYNC_ASK_OPERATION_ENTRY, operation);
+      updateOperationFooter(ctx, operation);
       asyncAsks.monitorFresh(operation, prompt, ctx);
       ctx.ui.notify(
         `Consultation dispatched to ${destination.agentName} (${destination.paneId})`,

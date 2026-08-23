@@ -24,12 +24,17 @@ Install [Herdr](https://herdr.dev), enter a Herdr-managed pane, and start Pi fro
 
 ```text
 /portr-pass <pi|claude> [--model <model>] <goal>
-/portr-ask <pi|claude> [--model <model>] [--preview] [--wait] <question>
+/portr-ask <pi|claude> [--model <model>] [--preview] [--no-context] [--wait] <question>
+/portr-status [operation-id]
+/portr-focus <operation-id>
+/portr-collect <operation-id>
 ```
 
-Pass builds a bounded semantic handoff from the active Pi context, opens it for review, and starts a visible destination through Herdr after approval. Saving the editor approves delivery; cancelling creates no destination. After delivery, Portr focuses the destination only if the origin pane is still focused, so switching elsewhere during launch is respected.
+Pass builds a bounded semantic handoff from the active Pi context, opens it for review, and starts a visible destination through Herdr after approval. Pass requires a persisted origin session. Saving the editor records the exact approved prompt before launch; cancelling records nothing and creates no destination. Append-only receipts preserve delivery, focus, and destination references without replaying an ambiguous handoff. After delivery, Portr focuses the destination only if the origin pane is still focused, so switching elsewhere during launch is respected.
 
-Ask starts Pi with only `read`, `grep`, `find`, and `ls`, or Claude with only `Read`, `Grep`, and `Glob`; Claude MCP tools are denied and permission prompts are auto-denied. By default ask returns after dispatch, persists the operation in the origin session, and later delivers one bounded result as a follow-up. Extension reloads and origin-session restarts reconcile unfinished operations without resubmitting the question. Add `--wait` for the blocking variant.
+Ask starts Pi with only `read`, `grep`, `find`, and `ls`, or Claude with only `Read`, `Grep`, and `Glob`; Claude MCP tools are denied and permission prompts are auto-denied. By default ask returns after dispatch, persists the operation in the origin session, and later delivers one bounded result as a follow-up. Extension reloads and origin-session restarts reconcile unfinished operations without resubmitting the question. A destination that requires intervention remains durably `blocked`; after resolving it in the destination, `/portr-collect <operation-id>` inspects and collects the result without replaying the prompt. Add `--no-context` to send only the question and consultation policy, or `--wait` for the blocking variant.
+
+`/portr-status` reports append-only state from the active origin branch; it does not poll destinations. The footer summarizes durable active and blocked Ask counts using the same state. `/portr-focus` focuses the destination recorded for an exact operation ID without changing its durable state.
 
 Destination panes and sessions are intentionally preserved after completion and after partial or uncertain failures.
 
@@ -38,6 +43,7 @@ Destination panes and sessions are intentionally preserved after completion and 
 - Current scope is Pi as the origin, Herdr as the orchestration adapter, and Pi or Claude Code as destinations; `ask` is asynchronous by default.
 - Context transfer is compaction-aware, semantic, and bounded. It excludes hidden reasoning and unnecessary tool output, and does not make sessions portable or replay-equivalent.
 - `ask` stores append-only snapshots in the origin Pi session. Delivery is reconciliable and idempotent within the current operation-id and origin-session contract, not a universal exactly-once guarantee.
+- `pass` stores the approved prompt and launch receipt, but never automatically resends an approved or failed handoff.
 - Herdr is invoked with argument arrays via `execFile(..., { shell: false })`, avoiding shell interpolation; this does not make arbitrary command execution safe or sandboxed.
 
 ## Requirements
