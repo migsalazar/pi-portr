@@ -3,9 +3,12 @@ import type { SessionEntry } from "@earendil-works/pi-coding-agent";
 export const ASYNC_ASK_OPERATION_ENTRY = "portr-ask-operation";
 export const ASYNC_ASK_RESULT_MESSAGE = "portr-ask-result";
 export const ASYNC_ASK_STATE_VERSION = 1;
+export const PASS_RECEIPT_ENTRY = "portr-pass-receipt";
+export const PASS_RECEIPT_STATE_VERSION = 1;
 
 export const OPERATION_STATUSES = [
   "working",
+  "blocked",
   "completed",
   "failed",
   "delivered",
@@ -41,6 +44,7 @@ export interface AsyncAskOperation {
   status: OperationStatus;
   originSession: string;
   question: string;
+  noContext?: true;
   cwd?: string;
   agentName: string;
   paneId: string;
@@ -51,6 +55,39 @@ export interface AsyncAskOperation {
   outcome?: "completed" | "failed";
   result?: StoredAskResult;
   failure?: AskOperationFailure;
+}
+
+export type PassDeliveryStatus = "approved" | "delivered" | "failed";
+export type PassFocusStatus =
+  | "not_attempted"
+  | "focused"
+  | "skipped"
+  | "failed";
+export type PassReceiptStage =
+  | "approved"
+  | "split"
+  | "start"
+  | "prompt"
+  | "focus";
+
+export interface PassReceipt {
+  version: typeof PASS_RECEIPT_STATE_VERSION;
+  kind: "pass";
+  operationId: string;
+  originSession: string;
+  target: "pi" | "claude";
+  model?: string;
+  goal: string;
+  approvedPrompt: string;
+  deliveryStatus: PassDeliveryStatus;
+  focusStatus: PassFocusStatus;
+  launchStage: PassReceiptStage;
+  agentName: string;
+  paneId?: string;
+  childSession?: string;
+  failure?: { message: string };
+  createdAt: number;
+  updatedAt: number;
 }
 
 export function restoreAsyncAskOperations(
@@ -70,6 +107,23 @@ export function restoreAsyncAskOperations(
   return operations;
 }
 
+export function restorePassReceipts(
+  entries: readonly SessionEntry[],
+): Map<string, PassReceipt> {
+  const receipts = new Map<string, PassReceipt>();
+  for (const entry of entries) {
+    if (
+      entry.type !== "custom" ||
+      entry.customType !== PASS_RECEIPT_ENTRY ||
+      !isPassReceipt(entry.data)
+    ) {
+      continue;
+    }
+    receipts.set(entry.data.operationId, entry.data);
+  }
+  return receipts;
+}
+
 export function isAsyncAskOperation(
   value: unknown,
 ): value is AsyncAskOperation {
@@ -84,6 +138,7 @@ export function isAsyncAskOperation(
     !isNonEmptyString(value.operationId) ||
     !isNonEmptyString(value.originSession) ||
     typeof value.question !== "string" ||
+    (value.noContext !== undefined && value.noContext !== true) ||
     (value.cwd !== undefined && !isNonEmptyString(value.cwd)) ||
     (value.target === "claude" && !isNonEmptyString(value.cwd)) ||
     !isNonEmptyString(value.agentName) ||
@@ -105,6 +160,13 @@ export function isAsyncAskOperation(
   if (value.status === "completed") {
     return value.result !== undefined && isNonEmptyString(value.childSession);
   }
+  if (value.status === "blocked") {
+    return (
+      value.failure !== undefined &&
+      value.result === undefined &&
+      value.outcome === undefined
+    );
+  }
   if (value.status === "failed") {
     return value.result !== undefined && value.failure !== undefined;
   }
@@ -115,6 +177,49 @@ export function isAsyncAskOperation(
     );
   }
   return true;
+}
+
+export function isPassReceipt(value: unknown): value is PassReceipt {
+  if (
+    !isRecord(value) ||
+    value.version !== PASS_RECEIPT_STATE_VERSION ||
+    value.kind !== "pass" ||
+    !isNonEmptyString(value.operationId) ||
+    !isNonEmptyString(value.originSession) ||
+    (value.target !== "pi" && value.target !== "claude") ||
+    (value.model !== undefined && !isNonEmptyString(value.model)) ||
+    !isNonEmptyString(value.goal) ||
+    !isNonEmptyString(value.approvedPrompt) ||
+    !isPassDeliveryStatus(value.deliveryStatus) ||
+    !isPassFocusStatus(value.focusStatus) ||
+    !isPassReceiptStage(value.launchStage) ||
+    !isNonEmptyString(value.agentName) ||
+    (value.paneId !== undefined && !isNonEmptyString(value.paneId)) ||
+    (value.childSession !== undefined &&
+      !isNonEmptyString(value.childSession)) ||
+    (value.failure !== undefined && !isPassReceiptFailure(value.failure)) ||
+    !isFiniteTimestamp(value.createdAt) ||
+    !isFiniteTimestamp(value.updatedAt)
+  ) {
+    return false;
+  }
+
+  if (value.deliveryStatus === "failed") {
+    return (
+      value.failure !== undefined &&
+      value.focusStatus === "not_attempted" &&
+      value.launchStage !== "approved"
+    );
+  }
+  if (value.deliveryStatus === "approved") {
+    return value.failure === undefined && value.focusStatus === "not_attempted";
+  }
+  if (value.paneId === undefined) {
+    return false;
+  }
+  return value.focusStatus === "failed"
+    ? value.failure !== undefined && value.launchStage === "focus"
+    : value.failure === undefined;
 }
 
 function isStoredAskResult(value: unknown): value is StoredAskResult {
@@ -139,6 +244,33 @@ function isOperationStatus(value: unknown): value is OperationStatus {
     typeof value === "string" &&
     OPERATION_STATUSES.includes(value as OperationStatus)
   );
+}
+
+function isPassDeliveryStatus(value: unknown): value is PassDeliveryStatus {
+  return value === "approved" || value === "delivered" || value === "failed";
+}
+
+function isPassFocusStatus(value: unknown): value is PassFocusStatus {
+  return (
+    value === "not_attempted" ||
+    value === "focused" ||
+    value === "skipped" ||
+    value === "failed"
+  );
+}
+
+function isPassReceiptStage(value: unknown): value is PassReceiptStage {
+  return (
+    value === "approved" ||
+    value === "split" ||
+    value === "start" ||
+    value === "prompt" ||
+    value === "focus"
+  );
+}
+
+function isPassReceiptFailure(value: unknown): value is { message: string } {
+  return isRecord(value) && isNonEmptyString(value.message);
 }
 
 function isFiniteTimestamp(value: unknown): value is number {

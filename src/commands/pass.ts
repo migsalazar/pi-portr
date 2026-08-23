@@ -4,12 +4,31 @@ import {
   type ExtensionAPI,
   type ExtensionCommandContext,
 } from "@earendil-works/pi-coding-agent";
-import { buildClaudeLaunchArgs } from "../claude-target.ts";
-import { buildTransferContext, quoteReferenceBlock } from "../context.ts";
-import type { CreateOrchestrator, Orchestrator } from "../orchestrator.ts";
-import { buildPiLaunchArgs } from "../pi-target.ts";
+import {
+  buildClaudeLaunchArgs,
+  resolveClaudeSessionReference,
+} from "../claude-target.ts";
+import {
+  boundText,
+  buildTransferContext,
+  quoteReferenceBlock,
+  sanitizeTransferText,
+} from "../context.ts";
+import type {
+  AgentState,
+  CreateOrchestrator,
+  Orchestrator,
+} from "../orchestrator.ts";
+import { buildPiLaunchArgs, resolvePiSessionReference } from "../pi-target.ts";
+import {
+  PASS_RECEIPT_ENTRY,
+  PASS_RECEIPT_STATE_VERSION,
+  type PassFocusStatus,
+  type PassReceipt,
+} from "../state.ts";
 
 const MAX_HANDOFF_CHARACTERS = 60_000;
+const MAX_PASS_FAILURE_CHARACTERS = 1_000;
 
 const HANDOFF_SYSTEM_PROMPT = `You create self-contained handoff prompts for coding agents.
 
@@ -36,6 +55,7 @@ export type PassLaunchStage = "split" | "start" | "prompt" | "focus";
 export interface PassLaunchResult {
   agentName: string;
   paneId: string;
+  focusStatus: Exclude<PassFocusStatus, "not_attempted" | "failed">;
 }
 
 export class PassUsageError extends Error {
@@ -49,12 +69,14 @@ export class PassLaunchError extends Error {
   readonly stage: PassLaunchStage;
   readonly agentName: string;
   readonly paneId: string | undefined;
+  readonly agent: AgentState | undefined;
 
   constructor(
     stage: PassLaunchStage,
     agentName: string,
     paneId: string | undefined,
     cause: unknown,
+    agent?: AgentState,
   ) {
     const references = [
       paneId === undefined ? undefined : `pane ${paneId}`,
@@ -73,7 +95,8 @@ export class PassLaunchError extends Error {
     this.name = "PassLaunchError";
     this.stage = stage;
     this.agentName = agentName;
-    this.paneId = paneId;
+    this.paneId = agent?.paneId ?? paneId;
+    this.agent = agent;
   }
 }
 
@@ -84,7 +107,7 @@ export function registerPassCommand(
   pi.registerCommand("portr-pass", {
     description: "Hand off work to another visible agent session",
     handler: async (args, ctx) => {
-      await handlePass(createOrchestrator, args, ctx);
+      await handlePass(pi, createOrchestrator, args, ctx);
     },
   });
 }
@@ -146,6 +169,8 @@ export async function launchPass(
     agentName: string;
     prompt: string;
     model?: string;
+    onPaneCreated?(paneId: string): void;
+    onDelivered?(agent: AgentState): void;
   },
 ): Promise<PassLaunchResult> {
   let stage: PassLaunchStage = "split";
@@ -157,6 +182,7 @@ export async function launchPass(
       cwd: options.cwd,
       direction: "right",
     });
+    options.onPaneCreated?.(paneId);
 
     stage = "start";
     await orchestrator.startAgent(
@@ -175,21 +201,45 @@ export async function launchPass(
     );
 
     stage = "prompt";
-    await promptPassDestination(
+    const agent = await promptPassDestination(
       orchestrator,
       options.agentName,
       options.prompt,
     );
+    if (agent.status === "blocked") {
+      throw new PassLaunchError(
+        stage,
+        options.agentName,
+        paneId,
+        new Error("destination is blocked and requires intervention"),
+        agent,
+      );
+    }
+    if (agent.status !== "working") {
+      throw new PassLaunchError(
+        stage,
+        options.agentName,
+        paneId,
+        new Error(
+          `destination did not acknowledge the prompt (status ${agent.status})`,
+        ),
+        agent,
+      );
+    }
+    options.onDelivered?.(agent);
 
     stage = "focus";
-    await focusDestinationIfOriginRemainsFocused(
+    const focusStatus = await focusDestinationIfOriginRemainsFocused(
       orchestrator,
       options.originPaneId,
       options.agentName,
     );
 
-    return { agentName: options.agentName, paneId };
+    return { agentName: options.agentName, paneId, focusStatus };
   } catch (error) {
+    if (error instanceof PassLaunchError) {
+      throw error;
+    }
     throw new PassLaunchError(stage, options.agentName, paneId, error);
   }
 }
@@ -198,36 +248,31 @@ async function focusDestinationIfOriginRemainsFocused(
   orchestrator: Orchestrator,
   originPaneId: string,
   agentName: string,
-): Promise<void> {
+): Promise<"focused" | "skipped"> {
   let originIsFocused: boolean;
   try {
     originIsFocused = await orchestrator.paneIsFocused(originPaneId);
   } catch {
-    return;
+    return "skipped";
   }
 
-  if (originIsFocused) {
-    await orchestrator.focus(agentName);
+  if (!originIsFocused) {
+    return "skipped";
   }
+  await orchestrator.focus(agentName);
+  return "focused";
 }
 
 async function promptPassDestination(
   orchestrator: Orchestrator,
   agentName: string,
   prompt: string,
-): Promise<void> {
-  const agent = await orchestrator.promptUntilWorking(agentName, prompt);
-  if (agent.status === "blocked") {
-    throw new Error("destination is blocked and requires intervention");
-  }
-  if (agent.status !== "working") {
-    throw new Error(
-      `destination did not acknowledge the prompt (status ${agent.status})`,
-    );
-  }
+): Promise<AgentState> {
+  return orchestrator.promptUntilWorking(agentName, prompt);
 }
 
 async function handlePass(
+  pi: ExtensionAPI,
   createOrchestrator: CreateOrchestrator,
   rawArguments: string,
   ctx: ExtensionCommandContext,
@@ -245,6 +290,11 @@ async function handlePass(
     return;
   }
 
+  const originSession = ctx.sessionManager.getSessionFile();
+  if (originSession === undefined) {
+    ctx.ui.notify("Pass requires a persisted origin session", "error");
+    return;
+  }
   if (ctx.model === undefined) {
     ctx.ui.notify("No model selected for handoff generation", "error");
     return;
@@ -274,7 +324,8 @@ async function handlePass(
     "info",
   );
 
-  const generated = await generateHandoff(ctx, context.text, args.goal);
+  const goal = sanitizeTransferText(args.goal);
+  const generated = await generateHandoff(ctx, context.text, goal);
   if (generated.status === "cancelled") {
     ctx.ui.notify("Pass cancelled", "info");
     return;
@@ -303,8 +354,36 @@ async function handlePass(
     );
     return;
   }
+  if (sanitizeTransferText(approvedPrompt) !== approvedPrompt) {
+    ctx.ui.notify("Handoff prompt must not contain base64 payloads", "error");
+    return;
+  }
 
-  const agentName = `portr-pass-${randomUUID().slice(0, 8)}`;
+  const operationId = randomUUID();
+  const agentName = `portr-pass-${operationId.slice(0, 8)}`;
+  const now = Date.now();
+  let receipt: PassReceipt = {
+    version: PASS_RECEIPT_STATE_VERSION,
+    kind: "pass",
+    operationId,
+    originSession,
+    target: args.target,
+    ...(args.model === undefined ? {} : { model: args.model }),
+    goal,
+    approvedPrompt,
+    deliveryStatus: "approved",
+    focusStatus: "not_attempted",
+    launchStage: "approved",
+    agentName,
+    createdAt: now,
+    updatedAt: now,
+  };
+  const persist = (next: PassReceipt): void => {
+    receipt = next;
+    pi.appendEntry(PASS_RECEIPT_ENTRY, receipt);
+  };
+  persist(receipt);
+
   try {
     const launchOptions = {
       originPaneId,
@@ -312,13 +391,62 @@ async function handlePass(
       agentName,
       prompt: approvedPrompt,
       ...(args.model === undefined ? {} : { model: args.model }),
+      onPaneCreated: (paneId: string) => {
+        persist({
+          ...receipt,
+          paneId,
+          launchStage: "split",
+          updatedAt: Date.now(),
+        });
+      },
+      onDelivered: (agent: AgentState) => {
+        const childSession = resolvePassSessionReference(
+          args.target,
+          agent.session,
+        );
+        persist({
+          ...receipt,
+          paneId: agent.paneId,
+          ...(childSession === undefined ? {} : { childSession }),
+          deliveryStatus: "delivered",
+          launchStage: "prompt",
+          updatedAt: Date.now(),
+        });
+      },
     };
     const result = await launchPass(args.target, orchestrator, launchOptions);
+    persist({
+      ...receipt,
+      paneId: result.paneId,
+      deliveryStatus: "delivered",
+      focusStatus: result.focusStatus,
+      launchStage: "focus",
+      updatedAt: Date.now(),
+    });
     ctx.ui.notify(
       `Handoff delivered to ${result.agentName} (${result.paneId})`,
       "info",
     );
   } catch (error) {
+    const launchError = error instanceof PassLaunchError ? error : undefined;
+    const stage = launchError?.stage ?? "split";
+    const childSession = resolvePassSessionReference(
+      args.target,
+      launchError?.agent?.session,
+    );
+    const delivered = receipt.deliveryStatus === "delivered";
+    persist({
+      ...receipt,
+      ...(launchError?.paneId === undefined
+        ? {}
+        : { paneId: launchError.paneId }),
+      ...(childSession === undefined ? {} : { childSession }),
+      deliveryStatus: delivered ? "delivered" : "failed",
+      focusStatus: delivered && stage === "focus" ? "failed" : "not_attempted",
+      launchStage: stage,
+      failure: { message: boundedFailureMessage(error) },
+      updatedAt: Date.now(),
+    });
     ctx.ui.notify(errorMessage(error), "error");
   }
 }
@@ -403,6 +531,22 @@ async function generateHandoff(
 
     return loader;
   });
+}
+
+function resolvePassSessionReference(
+  target: PassTarget,
+  session: AgentState["session"],
+): string | undefined {
+  return target === "pi"
+    ? resolvePiSessionReference(session)
+    : resolveClaudeSessionReference(session);
+}
+
+function boundedFailureMessage(error: unknown): string {
+  return boundText(
+    sanitizeTransferText(errorMessage(error)),
+    MAX_PASS_FAILURE_CHARACTERS,
+  ).text;
 }
 
 function takeToken(input: string): [string, string] {
