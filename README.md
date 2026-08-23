@@ -20,6 +20,24 @@ pi install npm:pi-portr
 
 Install [Herdr](https://herdr.dev), enter a Herdr-managed pane, and start Pi from inside that pane. Starting Pi outside Herdr leaves Portr without the pane context it needs.
 
+## Quick start
+
+Ask another agent for a read-only second opinion and wait for its answer:
+
+```text
+/portr-ask claude --wait Review the current approach and identify the main risk
+```
+
+Portr opens Claude in a new pane, sends bounded context from the current conversation, and returns the answer here. Omit `--wait` to keep working while the consultation runs.
+
+Hand off the current task to a new agent session:
+
+```text
+/portr-pass pi Continue the current task, implement the agreed changes, and run the relevant checks
+```
+
+Portr generates a handoff from the current conversation and opens it for review. Save it to launch the destination, or cancel to stop.
+
 ## Usage
 
 ```text
