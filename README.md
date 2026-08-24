@@ -49,17 +49,31 @@ Portr generates a handoff from the current conversation and opens it for review.
 /portr-settings
 ```
 
-Pass builds a bounded semantic handoff from the active Pi context, opens it for review, and starts a visible destination through Herdr after approval. Pass requires a persisted origin session. Saving the editor records the exact approved prompt before launch; cancelling records nothing and creates no destination. Append-only receipts preserve delivery, focus, and destination references without replaying an ambiguous handoff. After delivery, Portr focuses the destination only if the origin pane is still focused, so switching elsewhere during launch is respected.
+`/portr-pass` builds a bounded handoff, opens it for review, and launches only after you save it. Cancel to stop without creating a destination. Pass requires a persisted origin session.
 
-Ask starts Pi with only `read`, `grep`, `find`, and `ls`, or Claude with only `Read`, `Grep`, and `Glob`; Claude MCP tools are denied and permission prompts are auto-denied. By default ask returns after dispatch, persists the operation in the origin session, and later delivers one bounded result as a follow-up. Extension reloads and origin-session restarts reconcile unfinished operations without resubmitting the question. A destination that requires intervention remains durably `blocked`; after resolving it in the destination, `/portr-collect <operation-id>` inspects and collects the result without replaying the prompt. Add `--no-context` to send only the question and consultation policy, or `--wait` for the blocking variant.
+`/portr-ask` opens a read-only Pi or Claude session. It runs asynchronously by default and delivers the result as a follow-up; use `--wait` to block, `--preview` to edit the prompt, or `--no-context` to send only the question. Async Ask requires a persisted origin session.
 
-`/portr-status` reports append-only state from the active origin branch; it does not poll destinations. The footer summarizes durable active and blocked Ask counts using the same state. `/portr-focus` focuses the destination recorded for an exact operation ID without changing its durable state.
+Use `/portr-status` to inspect durable state, `/portr-focus` to return to a destination, and `/portr-collect` after resolving a blocked Ask. Status is recorded state, not live polling.
 
-Destination panes and sessions are intentionally preserved after completion and after partial or uncertain failures.
+Portr preserves destination panes and limits each Herdr tab to four panes, counting all panes. Use `/portr-settings` to change the limit. Refused operations are never retried automatically.
 
-Portr limits the current Herdr tab to four panes by default, counting panes regardless of who created them. Before each Ask or Pass split, it divides the origin pane along its longer visual side (`right` when its width is at least twice its height, otherwise `down`). At the configured limit, Portr refuses before creating a pane and tells the caller not to retry automatically. Use `/portr-settings` to change the limit. Pi can also inspect the setting or request a human-approved change through the discoverable `portr_settings` tool; ask Pi, for example, "How do I let pi-portr use more panes?"
+## Explicit by default
 
-The setting is stored in Portr's own global `portr.json` under Pi's agent directory (normally `~/.pi/agent/portr.json`). Portr never raises the limit automatically, retries a refused operation, or closes an existing pane.
+Portr creates panes only while handling explicit `/portr-ask` or `/portr-pass` commands. It exposes neither operation as an LLM-callable tool, and reconciliation never creates panes or resends prompts.
+
+Portr intentionally ships no default skill. To add a manual workflow, create `~/.pi/agent/skills/portr-workflow/SKILL.md`:
+
+```markdown
+---
+name: portr-workflow
+description: Suggests explicit pi-portr commands for consultations and handoffs.
+disable-model-invocation: true
+---
+
+Choose `/portr-ask` for a read-only opinion or `/portr-pass` for a handoff.
+Propose one exact command for the user to review and run. Never execute it,
+invoke Herdr directly, retry refused operations, or change the pane limit.
+```
 
 ## Architecture and limits
 
