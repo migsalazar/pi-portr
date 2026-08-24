@@ -28,13 +28,14 @@
     "LICENSE"
   ],
   "scripts": {
-    "test": "node --test --experimental-strip-types tests/*.test.ts",
+    "test": "node --test --experimental-strip-types tests/*.test.ts tests/*.test.mjs",
     "test:integration": "node --test --experimental-strip-types tests/integration/*.test.ts",
     "typecheck": "tsc --noEmit",
-    "lint": "biome lint src tests",
-    "format": "biome format --write src tests package.json tsconfig.json biome.json",
-    "format:check": "biome format src tests package.json tsconfig.json biome.json",
-    "check": "npm run typecheck && npm run lint && npm run format:check && npm test"
+    "lint": "biome lint src scripts tests",
+    "format": "biome format --write src scripts tests package.json tsconfig.json biome.json",
+    "format:check": "biome format src scripts tests package.json tsconfig.json biome.json",
+    "check": "npm run typecheck && npm run lint && npm run format:check && npm test",
+    "release": "node scripts/release.mjs"
   },
   "pi": {
     "extensions": [

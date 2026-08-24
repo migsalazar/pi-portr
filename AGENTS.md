@@ -30,3 +30,9 @@
 - Assume other Pi sessions may be modifying unrelated files.
 - Commit or stage only explicit files from the current task.
 - Never use rebase, git clean, reset --hard, force push, broad `git add`, or destructive Git commands without explicit instruction.
+
+# Releasing
+
+- `npm run release` and `npm run release -- vX.Y.Z` are one-shot release operations that create a version commit and tag, push `main`, then push the exact tag, triggering immutable npm and GitHub releases. Run one only after explicit user approval of the default patch bump or exact tag.
+- Once the version commit or tag exists, never rerun the release script for that version. Preserve state and continue only the missing push after inspection and separate explicit approval.
+- If CI fails after the tag reaches `origin`, rerun or fix GitHub Actions. Never move, delete, or force-push release tags, and never publish to npm locally.
