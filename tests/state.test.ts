@@ -36,8 +36,14 @@ test("restoreAsyncAskOperations keeps the latest valid branch snapshot", () => {
   assert.deepEqual(restored.get("operation-1"), completed);
 });
 
-test("restoreAsyncAskOperations preserves no-context intent and historical absence", () => {
-  const noContext = operation({ noContext: true });
+test("restoreAsyncAskOperations preserves provenance and historical absence", () => {
+  const noContext = operation({
+    noContext: true,
+    requestedModel: "anthropic/claude-sonnet",
+    contextCharacters: 0,
+    readOnlyPolicy: "harness-tools",
+    promptSha256: "a".repeat(64),
+  });
   const historical = operation({ operationId: "operation-historical" });
   const restored = restoreAsyncAskOperations([
     customEntry("no-context", noContext),
@@ -45,7 +51,35 @@ test("restoreAsyncAskOperations preserves no-context intent and historical absen
   ]);
 
   assert.equal(restored.get(noContext.operationId)?.noContext, true);
+  assert.equal(
+    restored.get(noContext.operationId)?.requestedModel,
+    "anthropic/claude-sonnet",
+  );
+  assert.equal(restored.get(noContext.operationId)?.contextCharacters, 0);
+  assert.equal(
+    restored.get(noContext.operationId)?.readOnlyPolicy,
+    "harness-tools",
+  );
+  assert.equal(
+    restored.get(noContext.operationId)?.promptSha256,
+    "a".repeat(64),
+  );
   assert.equal(restored.get(historical.operationId)?.noContext, undefined);
+  assert.equal(
+    restored.get(historical.operationId)?.contextCharacters,
+    undefined,
+  );
+});
+
+test("restoreAsyncAskOperations rejects malformed provenance", () => {
+  const current = operation();
+  const entries = [
+    customEntry("negative-context", { ...current, contextCharacters: -1 }),
+    customEntry("invalid-policy", { ...current, readOnlyPolicy: "sandbox" }),
+    customEntry("invalid-hash", { ...current, promptSha256: "not-a-hash" }),
+  ];
+
+  assert.equal(restoreAsyncAskOperations(entries).size, 0);
 });
 
 test("restoreAsyncAskOperations accepts Claude receipts without cwd and preserves historical cwd", () => {

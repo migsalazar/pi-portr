@@ -7,6 +7,7 @@ import type {
 } from "@earendil-works/pi-coding-agent";
 import { buildClaudeLaunchArgs } from "../src/claude-target.ts";
 import {
+  HANDOFF_SYSTEM_PROMPT,
   launchPass,
   parsePassArguments,
   PassLaunchError,
@@ -46,6 +47,14 @@ test("parsePassArguments preserves goal flags after a separator", () => {
     target: "pi",
     goal: "implement --strict mode",
   });
+});
+
+test("handoff generation requests operational evidence when present", () => {
+  assert.match(HANDOFF_SYSTEM_PROMPT, /validation commands and results/);
+  assert.match(HANDOFF_SYSTEM_PROMPT, /observed failures/);
+  assert.match(HANDOFF_SYSTEM_PROMPT, /rejected approaches and why/);
+  assert.match(HANDOFF_SYSTEM_PROMPT, /uncertainty/);
+  assert.match(HANDOFF_SYSTEM_PROMPT, /required verification/);
 });
 
 test("parsePassArguments rejects invalid input", () => {

@@ -36,10 +36,11 @@ import {
 const MAX_HANDOFF_CHARACTERS = 60_000;
 const MAX_PASS_FAILURE_CHARACTERS = 1_000;
 
-const HANDOFF_SYSTEM_PROMPT = `You create self-contained handoff prompts for coding agents.
+export const HANDOFF_SYSTEM_PROMPT = `You create self-contained handoff prompts for coding agents.
 
 Given a quoted conversation context and a requested continuation:
 - preserve the current objective, settled decisions, constraints, relevant files, completed work, and unresolved questions;
+- preserve validation commands and results, observed failures, rejected approaches and why, uncertainty, and required verification when present;
 - state the next task clearly;
 - do not continue or answer the quoted conversation;
 - do not invent facts;

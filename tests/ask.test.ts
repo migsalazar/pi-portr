@@ -193,13 +193,22 @@ test("portr-ask --no-context skips context extraction and persists intent", asyn
     },
   } as unknown as ExtensionCommandContext;
 
-  await handler?.("pi --no-context answer independently", ctx);
+  await handler?.(
+    "pi --model anthropic/claude-sonnet --no-context answer independently",
+    ctx,
+  );
 
   assert.match(
     submittedPrompt ?? "",
     /\(No transferable origin context was available\.\)/,
   );
-  assert.equal((appended[0] as AsyncAskOperation | undefined)?.noContext, true);
+  const operation = appended[0] as AsyncAskOperation | undefined;
+  assert.equal(operation?.noContext, true);
+  assert.equal(operation?.requestedModel, "anthropic/claude-sonnet");
+  assert.equal(operation?.contextCharacters, 0);
+  assert.equal(operation?.contextTruncated, undefined);
+  assert.equal(operation?.readOnlyPolicy, "harness-tools");
+  assert.match(operation?.promptSha256 ?? "", /^[0-9a-f]{64}$/);
 });
 
 test("buildAskPrompt block-quotes structural headings in origin context", () => {

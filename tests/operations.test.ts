@@ -106,6 +106,11 @@ test("formatAskOperation bounds and sanitizes durable details", () => {
   const text = formatAskOperation(
     operation({
       question: `Inspect data:image/png;base64,AAABBB== ${"x".repeat(300)}`,
+      requestedModel: "anthropic/claude-sonnet",
+      contextCharacters: 60_000,
+      contextTruncated: true,
+      readOnlyPolicy: "harness-tools",
+      promptSha256: "a".repeat(64),
       failure: {
         reason: "prompt_failed",
         message: "failed\nwith another line",
@@ -117,6 +122,10 @@ test("formatAskOperation bounds and sanitizes durable details", () => {
   assert.match(text, /\[base64 data omitted\]/);
   assert.doesNotMatch(text, /AAABBB|\nwith another line/);
   assert.match(text, /Question: .*…/);
+  assert.match(text, /Requested model: anthropic\/claude-sonnet/);
+  assert.match(text, /Context: 60000 characters \(truncated\)/);
+  assert.match(text, /Read-only policy: harness-tools/);
+  assert.match(text, /Prompt SHA-256: a{64}/);
 });
 
 test("formatPassReceipt exposes bounded approved state without payloads", () => {

@@ -45,6 +45,11 @@ export interface AsyncAskOperation {
   originSession: string;
   question: string;
   noContext?: true;
+  requestedModel?: string;
+  contextCharacters?: number;
+  contextTruncated?: true;
+  readOnlyPolicy?: "harness-tools";
+  promptSha256?: string;
   cwd?: string;
   agentName: string;
   paneId: string;
@@ -139,6 +144,14 @@ export function isAsyncAskOperation(
     !isNonEmptyString(value.originSession) ||
     typeof value.question !== "string" ||
     (value.noContext !== undefined && value.noContext !== true) ||
+    (value.requestedModel !== undefined &&
+      !isNonEmptyString(value.requestedModel)) ||
+    (value.contextCharacters !== undefined &&
+      !isNonNegativeSafeInteger(value.contextCharacters)) ||
+    (value.contextTruncated !== undefined && value.contextTruncated !== true) ||
+    (value.readOnlyPolicy !== undefined &&
+      value.readOnlyPolicy !== "harness-tools") ||
+    (value.promptSha256 !== undefined && !isSha256(value.promptSha256)) ||
     (value.cwd !== undefined && !isNonEmptyString(value.cwd)) ||
     !isNonEmptyString(value.agentName) ||
     !isNonEmptyString(value.paneId) ||
@@ -274,6 +287,14 @@ function isPassReceiptFailure(value: unknown): value is { message: string } {
 
 function isFiniteTimestamp(value: unknown): value is number {
   return typeof value === "number" && Number.isFinite(value) && value >= 0;
+}
+
+function isNonNegativeSafeInteger(value: unknown): value is number {
+  return Number.isSafeInteger(value) && (value as number) >= 0;
+}
+
+function isSha256(value: unknown): value is string {
+  return typeof value === "string" && /^[0-9a-f]{64}$/.test(value);
 }
 
 function isNonEmptyString(value: unknown): value is string {

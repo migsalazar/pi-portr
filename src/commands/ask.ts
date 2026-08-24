@@ -1,4 +1,4 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import type {
   ExtensionAPI,
   ExtensionCommandContext,
@@ -404,11 +404,13 @@ async function handleAsk(
   }
 
   let contextText = "";
+  let contextTruncated = false;
   if (args.noContext) {
     ctx.ui.notify("Preparing consultation without origin context", "info");
   } else {
     const context = buildTransferContext(ctx.sessionManager);
     contextText = context.text;
+    contextTruncated = context.truncated;
     const truncationNote = context.truncated
       ? " (earlier context omitted)"
       : "";
@@ -486,6 +488,9 @@ async function handleAsk(
       return;
     }
     ctx.ui.setStatus("portr-ask", `Dispatching ${agentName}`);
+    const promptSha256 = createHash("sha256")
+      .update(prompt, "utf8")
+      .digest("hex");
     let receiptHandedToCoordinator = false;
     try {
       const destinationOptions = {
@@ -511,6 +516,11 @@ async function handleAsk(
         originSession,
         question: sanitizeTransferText(args.question),
         ...(args.noContext ? { noContext: true as const } : {}),
+        ...(args.model === undefined ? {} : { requestedModel: args.model }),
+        contextCharacters: contextText.length,
+        ...(contextTruncated ? { contextTruncated: true as const } : {}),
+        readOnlyPolicy: "harness-tools",
+        promptSha256,
         agentName: destination.agentName,
         paneId: destination.paneId,
         createdAt: now,

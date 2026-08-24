@@ -79,7 +79,7 @@ invoke Herdr directly, retry refused operations, or change the pane limit.
 
 - Current scope is Pi as the origin, Herdr as the orchestration adapter, and Pi or Claude Code as destinations; `ask` is asynchronous by default.
 - Context transfer is compaction-aware, semantic, and bounded. It excludes hidden reasoning and unnecessary tool output, and does not make sessions portable or replay-equivalent.
-- `ask` stores append-only snapshots in the origin Pi session. Delivery is reconciliable and idempotent within the current operation-id and origin-session contract, not a universal exactly-once guarantee.
+- `ask` stores append-only snapshots in the origin Pi session. New snapshots include requested model, context size/truncation, harness-level read-only policy, and the final prompt SHA-256 without copying the full prompt. Delivery is reconciliable and idempotent within the current operation-id and origin-session contract, not a universal exactly-once guarantee.
 - `pass` stores the approved prompt and launch receipt, but never automatically resends an approved or failed handoff.
 - Herdr is invoked with argument arrays via `execFile(..., { shell: false })`, avoiding shell interpolation; this does not make arbitrary command execution safe or sandboxed.
 - Pane direction is a best-effort aspect-ratio choice from the origin pane: wide panes split right, otherwise down. Portr does not guarantee minimum resulting dimensions; zoomed or ambiguous layouts are refused before splitting.

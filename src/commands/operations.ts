@@ -135,6 +135,24 @@ export function formatAskOperation(operation: AsyncAskOperation): string {
     `Updated: ${formatTimestamp(operation.updatedAt)}`,
     `Question: ${oneLine(operation.question, SUMMARY_EXCERPT_CHARACTERS)}`,
   ];
+  if (operation.requestedModel !== undefined) {
+    lines.push(
+      `Requested model: ${oneLine(operation.requestedModel, DETAIL_EXCERPT_CHARACTERS)}`,
+    );
+  }
+  if (operation.contextCharacters !== undefined) {
+    lines.push(
+      operation.noContext === true
+        ? "Context: none (--no-context)"
+        : `Context: ${operation.contextCharacters} characters${operation.contextTruncated === true ? " (truncated)" : ""}`,
+    );
+  }
+  if (operation.readOnlyPolicy !== undefined) {
+    lines.push(`Read-only policy: ${operation.readOnlyPolicy}`);
+  }
+  if (operation.promptSha256 !== undefined) {
+    lines.push(`Prompt SHA-256: ${operation.promptSha256}`);
+  }
   if (operation.childSession !== undefined) {
     lines.push(
       `Child session: ${oneLine(operation.childSession, DETAIL_EXCERPT_CHARACTERS)}`,
