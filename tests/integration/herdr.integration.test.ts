@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { createHash, randomUUID } from "node:crypto";
+import { readFileSync } from "node:fs";
 import test from "node:test";
 import type { SessionEntry } from "@earendil-works/pi-coding-agent";
 import {
@@ -38,6 +39,7 @@ const DEFAULT_TIMEOUT_MS = 180_000;
 const BOUNDARY_CONTEXT_CHARACTERS = 60_000;
 const BOUNDARY_PROMPT_CHARACTERS = 90_000;
 const BOUNDARY_CONTEXT_LINES = 14_718;
+const PACKAGE_VERSION = readPackageVersion();
 
 test("Claude selection prompt preserves the intended transfer facts", () => {
   const prompt = buildSelectionPrompt();
@@ -538,7 +540,20 @@ function assertScenarioAnswer(
   }
 
   assert.match(text, /\bpi-portr\b/);
-  assert.match(text, /\b0\.1\.0\b/);
+  assert.ok(
+    text.includes(PACKAGE_VERSION),
+    `tools answer does not include package version ${PACKAGE_VERSION}`,
+  );
+}
+
+function readPackageVersion(): string {
+  const value: unknown = JSON.parse(
+    readFileSync(new URL("../../package.json", import.meta.url), "utf8"),
+  );
+  assert.ok(typeof value === "object" && value !== null);
+  const version = (value as Record<string, unknown>).version;
+  assert.ok(typeof version === "string");
+  return version;
 }
 
 function readOptionalEnvironment(name: string): string | undefined {

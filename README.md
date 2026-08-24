@@ -4,7 +4,7 @@ Hand off work and ask questions across visible, independent agent sessions.
 
 `pi-portr` is a Pi extension for coordinating work across visible, independent agent sessions. It currently uses Herdr to orchestrate Pi and Claude destinations while keeping context transfer explicit, bounded, and reviewable.
 
-> Status: MVP implemented and validated for the `0.1.0` release.
+> Status: MVP delivered and actively maintained.
 
 ## Demo
 
