@@ -82,6 +82,7 @@ invoke Herdr directly, retry refused operations, or change the pane limit.
 - `ask` stores append-only snapshots in the origin Pi session. Delivery is reconciliable and idempotent within the current operation-id and origin-session contract, not a universal exactly-once guarantee.
 - `pass` stores the approved prompt and launch receipt, but never automatically resends an approved or failed handoff.
 - Herdr is invoked with argument arrays via `execFile(..., { shell: false })`, avoiding shell interpolation; this does not make arbitrary command execution safe or sandboxed.
+- Pane direction is a best-effort aspect-ratio choice from the origin pane: wide panes split right, otherwise down. Portr does not guarantee minimum resulting dimensions; zoomed or ambiguous layouts are refused before splitting.
 - The pane limit controls only Portr splits. It prevents normal sequential recursion but is not an atomic cross-process maximum when multiple Portr processes split concurrently.
 
 ## Requirements
