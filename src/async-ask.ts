@@ -39,6 +39,7 @@ export const ASK_RESULT_RETRY_TIMEOUT_MS = 2_000;
 export const ASK_RESULT_RETRY_INTERVAL_MS = 100;
 export const MAX_RETURN_ANSWER_CHARACTERS = 40_000;
 const QUESTION_EXCERPT_CHARACTERS = 1_000;
+const MAX_FAILURE_CHARACTERS = 1_000;
 
 export type AskTarget = "pi" | "claude";
 export type AskLaunchStage = "split" | "start" | "prompt_wait";
@@ -857,7 +858,13 @@ function classifyAsyncAskFailure(error: unknown): AskOperationFailure {
   } else if (error instanceof AskResultError) {
     reason = "result_unavailable";
   }
-  return { reason, message: errorMessage(error) };
+  return {
+    reason,
+    message: boundText(
+      sanitizeTransferText(errorMessage(error)),
+      MAX_FAILURE_CHARACTERS,
+    ).text,
+  };
 }
 
 function buildAsyncAskFailureResult(

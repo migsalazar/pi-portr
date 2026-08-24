@@ -926,6 +926,39 @@ test("AsyncAskCoordinator fails an expired pre-submit recovery without resubmitt
   assert.match(result.content ?? "", /child session \/tmp\/child\.jsonl/);
 });
 
+test("AsyncAskCoordinator bounds and sanitizes delivered failure diagnostics", async () => {
+  const operation = workingOperation();
+  const entries: SessionEntry[] = [operationEntry("working", operation)];
+  const sent: Array<{ message: unknown; options: unknown }> = [];
+  const coordinator = new AsyncAskCoordinator(runtimeApi(entries, sent), {
+    createOrchestrator: () =>
+      ({
+        promptAndWait: async () => {
+          throw new Error(
+            `failed data:image/png;base64,AAABBB== ${"x".repeat(2_000)}`,
+          );
+        },
+      }) as unknown as Orchestrator,
+    extractAnswer: () => "must not extract",
+  });
+
+  coordinator.monitorFresh(
+    operation,
+    "Question prompt",
+    runtimeContext(entries),
+  );
+  await waitFor(() => sent.length === 1);
+
+  const restored = restoreAsyncAskOperations(entries).get(
+    operation.operationId,
+  );
+  assert.equal(restored?.failure?.message.length, 1_000);
+  assert.match(restored?.failure?.message ?? "", /\[base64 data omitted\]/);
+  assert.doesNotMatch(restored?.failure?.message ?? "", /AAABBB/);
+  const result = sent[0]?.message as { content?: string };
+  assert.doesNotMatch(result.content ?? "", /AAABBB/);
+});
+
 test("AsyncAskCoordinator preserves destination references when recovery is blocked", async () => {
   const operation = workingOperation();
   const entries: SessionEntry[] = [operationEntry("working", operation)];
