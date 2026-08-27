@@ -179,6 +179,11 @@ export function formatPassReceipt(receipt: PassReceipt): string {
     `Goal: ${oneLine(receipt.goal, SUMMARY_EXCERPT_CHARACTERS)}`,
     `Approved prompt: ${oneLine(receipt.approvedPrompt, DETAIL_EXCERPT_CHARACTERS)}`,
   ];
+  if (receipt.cwd !== undefined) {
+    lines.push(
+      `Working directory: ${oneLine(receipt.cwd, DETAIL_EXCERPT_CHARACTERS)}`,
+    );
+  }
   if (receipt.childSession !== undefined) {
     lines.push(
       `Child session: ${oneLine(receipt.childSession, DETAIL_EXCERPT_CHARACTERS)}`,

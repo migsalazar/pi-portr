@@ -1,4 +1,6 @@
 import { randomUUID } from "node:crypto";
+import { stat } from "node:fs/promises";
+import { resolve } from "node:path";
 import {
   BorderedLoader,
   type ExtensionAPI,
@@ -35,6 +37,8 @@ import {
 
 const MAX_HANDOFF_CHARACTERS = 60_000;
 const MAX_PASS_FAILURE_CHARACTERS = 1_000;
+const PASS_USAGE =
+  "Usage: /portr-pass <pi|claude> [--model <model>] [--cwd <path>] <goal>";
 
 export const HANDOFF_SYSTEM_PROMPT = `You create self-contained handoff prompts for coding agents.
 
@@ -55,6 +59,7 @@ export interface PassArguments {
   target: PassTarget;
   goal: string;
   model?: string;
+  cwd?: string;
 }
 
 export type PassLaunchStage = "split" | "start" | "prompt" | "focus";
@@ -123,13 +128,12 @@ export function registerPassCommand(
 export function parsePassArguments(input: string): PassArguments {
   const [targetToken, afterTarget] = takeToken(input.trim());
   if (targetToken !== "pi" && targetToken !== "claude") {
-    throw new PassUsageError(
-      "Usage: /portr-pass <pi|claude> [--model <model>] <goal>",
-    );
+    throw new PassUsageError(PASS_USAGE);
   }
 
   let remainder = afterTarget.trimStart();
   let model: string | undefined;
+  let cwd: string | undefined;
 
   while (remainder.startsWith("--")) {
     if (remainder === "--") {
@@ -142,20 +146,33 @@ export function parsePassArguments(input: string): PassArguments {
     }
 
     const [option, afterOption] = takeToken(remainder);
-    if (option !== "--model") {
-      throw new PassUsageError(`Unknown option: ${option}`);
-    }
-    if (model !== undefined) {
-      throw new PassUsageError("--model may only be provided once");
+    if (option === "--model") {
+      if (model !== undefined) {
+        throw new PassUsageError("--model may only be provided once");
+      }
+
+      const [modelToken, afterModel] = takeToken(afterOption.trimStart());
+      if (modelToken.length === 0 || modelToken.startsWith("--")) {
+        throw new PassUsageError("--model requires a value");
+      }
+
+      model = modelToken;
+      remainder = afterModel.trimStart();
+      continue;
     }
 
-    const [modelToken, afterModel] = takeToken(afterOption.trimStart());
-    if (modelToken.length === 0) {
-      throw new PassUsageError("--model requires a value");
+    if (option === "--cwd") {
+      if (cwd !== undefined) {
+        throw new PassUsageError("--cwd may only be provided once");
+      }
+
+      const [cwdToken, afterCwd] = takeOptionValue(afterOption, "--cwd");
+      cwd = cwdToken;
+      remainder = afterCwd.trimStart();
+      continue;
     }
 
-    model = modelToken;
-    remainder = afterModel.trimStart();
+    throw new PassUsageError(`Unknown option: ${option}`);
   }
 
   const goal = remainder.trim();
@@ -163,9 +180,40 @@ export function parsePassArguments(input: string): PassArguments {
     throw new PassUsageError("A handoff goal is required");
   }
 
-  return model === undefined
-    ? { target: targetToken, goal }
-    : { target: targetToken, goal, model };
+  return {
+    target: targetToken,
+    goal,
+    ...(model === undefined ? {} : { model }),
+    ...(cwd === undefined ? {} : { cwd }),
+  };
+}
+
+export async function resolvePassCwd(
+  originCwd: string,
+  requestedCwd: string | undefined,
+): Promise<string> {
+  if (requestedCwd === undefined) {
+    return originCwd;
+  }
+
+  const destinationCwd = resolve(originCwd, requestedCwd);
+  let destinationStat: Awaited<ReturnType<typeof stat>>;
+  try {
+    destinationStat = await stat(destinationCwd);
+  } catch (error) {
+    if (isNodeError(error) && error.code === "ENOENT") {
+      throw new Error(`Pass destination does not exist: ${destinationCwd}`);
+    }
+    throw new Error(
+      `Could not access Pass destination ${destinationCwd}: ${errorMessage(error)}`,
+      { cause: error },
+    );
+  }
+
+  if (!destinationStat.isDirectory()) {
+    throw new Error(`Pass destination is not a directory: ${destinationCwd}`);
+  }
+  return destinationCwd;
 }
 
 export async function launchPass(
@@ -300,6 +348,21 @@ async function handlePass(
     return;
   }
 
+  let destinationCwd: string;
+  try {
+    destinationCwd = await resolvePassCwd(ctx.cwd, args.cwd);
+  } catch (error) {
+    ctx.ui.notify(errorMessage(error), "error");
+    return;
+  }
+  const destinationLabel = formatDestinationCwd(destinationCwd);
+  if (args.cwd !== undefined) {
+    ctx.ui.notify(
+      `Pass destination: ${destinationLabel}. Origin filesystem changes are not copied.`,
+      "info",
+    );
+  }
+
   const originSession = ctx.sessionManager.getSessionFile();
   if (originSession === undefined) {
     ctx.ui.notify("Pass requires a persisted origin session", "error");
@@ -346,7 +409,9 @@ async function handlePass(
   }
 
   const approvedPrompt = await ctx.ui.editor(
-    "Review handoff prompt — save to continue",
+    args.cwd === undefined
+      ? "Review handoff prompt — save to continue"
+      : `Review handoff for ${destinationLabel} — save to continue`,
     generated.text,
   );
   if (approvedPrompt === undefined) {
@@ -379,6 +444,7 @@ async function handlePass(
     originSession,
     target: args.target,
     ...(args.model === undefined ? {} : { model: args.model }),
+    cwd: destinationCwd,
     goal,
     approvedPrompt,
     deliveryStatus: "approved",
@@ -406,7 +472,7 @@ async function handlePass(
 
     const launchOptions = {
       originPaneId,
-      cwd: ctx.cwd,
+      cwd: destinationCwd,
       agentName,
       prompt: approvedPrompt,
       maxPanes,
@@ -562,6 +628,12 @@ function resolvePassSessionReference(
     : resolveClaudeSessionReference(session);
 }
 
+function formatDestinationCwd(cwd: string): string {
+  const clean = sanitizeTransferText(cwd).replace(/\s+/g, " ").trim();
+  const bounded = boundText(clean, 500);
+  return bounded.text + (bounded.truncated ? "…" : "");
+}
+
 function boundedFailureMessage(error: unknown): string {
   return boundText(
     sanitizeTransferText(errorMessage(error)),
@@ -569,9 +641,39 @@ function boundedFailureMessage(error: unknown): string {
   ).text;
 }
 
+function takeOptionValue(input: string, option: string): [string, string] {
+  const valueInput = input.trimStart();
+  const quote = valueInput[0];
+  if (quote === '"' || quote === "'") {
+    const closingQuote = valueInput.indexOf(quote, 1);
+    if (closingQuote === -1) {
+      throw new PassUsageError(`${option} has an unterminated quoted value`);
+    }
+    const value = valueInput.slice(1, closingQuote);
+    const remainder = valueInput.slice(closingQuote + 1);
+    if (remainder.length > 0 && !/^\s/.test(remainder)) {
+      throw new PassUsageError(`${option} has a malformed quoted value`);
+    }
+    if (value.length === 0) {
+      throw new PassUsageError(`${option} requires a value`);
+    }
+    return [value, remainder];
+  }
+
+  const [value, remainder] = takeToken(valueInput);
+  if (value.length === 0 || value.startsWith("--")) {
+    throw new PassUsageError(`${option} requires a value`);
+  }
+  return [value, remainder];
+}
+
 function takeToken(input: string): [string, string] {
   const match = /^(\S+)([\s\S]*)$/.exec(input);
   return match === null ? ["", ""] : [match[1] ?? "", match[2] ?? ""];
+}
+
+function isNodeError(error: unknown): error is NodeJS.ErrnoException {
+  return error instanceof Error && "code" in error;
 }
 
 function errorMessage(error: unknown): string {

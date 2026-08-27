@@ -132,6 +132,7 @@ test("formatPassReceipt exposes bounded approved state without payloads", () => 
   const text = formatPassReceipt(
     passReceipt({
       approvedPrompt: "Approved data:image/png;base64,AAABBB== prompt",
+      cwd: `/tmp/data:image/png;base64,CCCDDD==\n${"x".repeat(600)}`,
     }),
   );
 
@@ -140,7 +141,18 @@ test("formatPassReceipt exposes bounded approved state without payloads", () => 
     text,
     /Approved prompt: Approved \[base64 data omitted\] prompt/,
   );
-  assert.doesNotMatch(text, /AAABBB/);
+  assert.doesNotMatch(text, /AAABBB|CCCDDD/);
+  const cwdLine = text
+    .split("\n")
+    .find((line) => line.startsWith("Working directory:"));
+  assert.match(
+    cwdLine ?? "",
+    /Working directory: \/tmp\/\[base64 data omitted\] x+…$/,
+  );
+  assert.ok(
+    (cwdLine?.length ?? Number.POSITIVE_INFINITY) <=
+      "Working directory: ".length + 501,
+  );
 });
 
 test("resolveOperation includes Pass receipts", () => {

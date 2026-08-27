@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { resolve } from "node:path";
 import test from "node:test";
 import type {
   ExtensionAPI,
@@ -11,6 +12,7 @@ import {
   launchPass,
   parsePassArguments,
   PassLaunchError,
+  resolvePassCwd,
   PassUsageError,
   registerPassCommand,
 } from "../src/commands/pass.ts";
@@ -21,7 +23,11 @@ import {
 } from "../src/herdr.ts";
 import type { Orchestrator } from "../src/orchestrator.ts";
 import { buildPiLaunchArgs } from "../src/pi-target.ts";
-import { PASS_RECEIPT_ENTRY, restorePassReceipts } from "../src/state.ts";
+import {
+  PASS_RECEIPT_ENTRY,
+  type PassReceipt,
+  restorePassReceipts,
+} from "../src/state.ts";
 
 test("parsePassArguments parses a Pi goal and optional model", () => {
   assert.deepEqual(
@@ -40,6 +46,37 @@ test("parsePassArguments parses a Claude goal and optional model", () => {
     model: "opus",
     goal: "continue the MVP",
   });
+});
+
+test("parsePassArguments parses cwd options and quoted paths", () => {
+  assert.deepEqual(
+    parsePassArguments(
+      'claude --cwd "../feature worktree" --model opus continue the MVP',
+    ),
+    {
+      target: "claude",
+      model: "opus",
+      cwd: "../feature worktree",
+      goal: "continue the MVP",
+    },
+  );
+  assert.deepEqual(
+    parsePassArguments("pi --model test/model --cwd ./worktree continue"),
+    {
+      target: "pi",
+      model: "test/model",
+      cwd: "./worktree",
+      goal: "continue",
+    },
+  );
+  assert.deepEqual(
+    parsePassArguments('pi --cwd "--feature worktree" continue'),
+    {
+      target: "pi",
+      cwd: "--feature worktree",
+      goal: "continue",
+    },
+  );
 });
 
 test("parsePassArguments preserves goal flags after a separator", () => {
@@ -67,6 +104,41 @@ test("parsePassArguments rejects invalid input", () => {
   assert.throws(
     () => parsePassArguments("pi --model first --model second goal"),
     /only be provided once/,
+  );
+  assert.throws(
+    () => parsePassArguments("pi --cwd first --cwd second goal"),
+    /only be provided once/,
+  );
+  assert.throws(() => parsePassArguments("pi --cwd"), /--cwd requires a value/);
+  assert.throws(
+    () => parsePassArguments('pi --cwd "unfinished goal'),
+    /unterminated quoted value/,
+  );
+  assert.throws(
+    () => parsePassArguments('pi --cwd "worktree"suffix goal'),
+    /malformed quoted value/,
+  );
+});
+
+test("resolvePassCwd preserves the default and validates requested directories", async () => {
+  const originCwd = process.cwd();
+
+  assert.equal(await resolvePassCwd(originCwd, undefined), originCwd);
+  assert.equal(
+    await resolvePassCwd(originCwd, "tests"),
+    resolve(originCwd, "tests"),
+  );
+  await assert.rejects(
+    () => resolvePassCwd(originCwd, "package.json"),
+    /not a directory/,
+  );
+  await assert.rejects(
+    () =>
+      resolvePassCwd(
+        originCwd,
+        `tests/missing-pass-destination-${process.pid}`,
+      ),
+    /does not exist/,
   );
 });
 
@@ -376,7 +448,13 @@ test("portr-pass persists the exact approved prompt and useful transitions", asy
   const run = await runPassCommand();
   const receipts = run.entries.flatMap((entry) =>
     entry.type === "custom" && entry.customType === PASS_RECEIPT_ENTRY
-      ? [entry.data as { deliveryStatus: string; focusStatus: string }]
+      ? [
+          entry.data as {
+            deliveryStatus: string;
+            focusStatus: string;
+            cwd?: string;
+          },
+        ]
       : [],
   );
   const latest = [...restorePassReceipts(run.entries).values()][0];
@@ -390,8 +468,10 @@ test("portr-pass persists the exact approved prompt and useful transitions", asy
       ["delivered", "focused"],
     ],
   );
+  assert.ok(receipts.every((receipt) => receipt.cwd === "/tmp/project"));
   assert.equal(latest?.approvedPrompt, "# Approved handoff\n\nExact text");
   assert.equal(latest?.goal, "continue the MVP");
+  assert.equal(latest?.cwd, "/tmp/project");
   assert.equal(latest?.paneId, "w1:p2");
   assert.equal(latest?.childSession, "/tmp/child.jsonl");
   assert.equal(latest?.launchStage, "focus");
@@ -416,6 +496,49 @@ test("portr-pass records an actionable split failure at the pane limit", async (
   assert.equal(receipt?.paneId, undefined);
   assert.match(receipt?.failure?.message ?? "", /pane limit reached \(4\/4\)/);
   assert.match(run.notifications.at(-1) ?? "", /\/portr-settings/);
+});
+
+test("portr-pass validates and persists an alternate destination cwd", async () => {
+  const originCwd = process.cwd();
+  const destinationCwd = resolve(originCwd, "tests");
+  const run = await runPassCommand({
+    cwd: originCwd,
+    commandArgs: 'pi --cwd "tests" continue the MVP',
+  });
+  const receipts = run.entries.flatMap((entry) =>
+    entry.type === "custom" && entry.customType === PASS_RECEIPT_ENTRY
+      ? [entry.data as PassReceipt]
+      : [],
+  );
+
+  assert.ok(receipts.length > 0);
+  assert.ok(receipts.every((receipt) => receipt.cwd === destinationCwd));
+  assert.deepEqual(run.splitCwds, [destinationCwd]);
+  assert.match(
+    run.notifications[0] ?? "",
+    /Pass destination: .*tests.*not copied/,
+  );
+  assert.ok(
+    run.notifications.findIndex((message) =>
+      message.startsWith("Pass destination:"),
+    ) <
+      run.notifications.findIndex((message) =>
+        message.startsWith("Generating handoff"),
+      ),
+  );
+});
+
+test("portr-pass rejects an invalid destination before model or orchestration work", async () => {
+  const run = await runPassCommand({
+    cwd: process.cwd(),
+    commandArgs: "pi --cwd package.json continue the MVP",
+  });
+
+  assert.equal(run.entries.length, 0);
+  assert.equal(run.customCalls, 0);
+  assert.equal(run.preflightCalls, 0);
+  assert.deepEqual(run.splitCwds, []);
+  assert.match(run.notifications.at(-1) ?? "", /not a directory/);
 });
 
 test("portr-pass cancellation, invalid payload, and in-memory origin create no receipt", async () => {
@@ -462,11 +585,15 @@ async function runPassCommand(
     failureStage?: "split" | "start" | "prompt" | "focus";
     paneCount?: number;
     settingsFailure?: boolean;
+    cwd?: string;
+    commandArgs?: string;
   } = {},
 ): Promise<{
   entries: SessionEntry[];
   notifications: string[];
   customCalls: number;
+  preflightCalls: number;
+  splitCwds: string[];
 }> {
   const entries: SessionEntry[] = [];
   const contextEntries: SessionEntry[] = [
@@ -483,7 +610,9 @@ async function runPassCommand(
     },
   ];
   const notifications: string[] = [];
+  const splitCwds: string[] = [];
   let customCalls = 0;
+  let preflightCalls = 0;
   let entryIndex = 0;
   let handler:
     | ((args: string, ctx: ExtensionCommandContext) => Promise<void>)
@@ -510,12 +639,16 @@ async function runPassCommand(
     },
   } as unknown as ExtensionAPI;
   const orchestrator = {
-    currentPane: async () => "w1:p1",
+    currentPane: async () => {
+      preflightCalls += 1;
+      return "w1:p1";
+    },
     paneLayout: async () => ({
       paneCount: options.paneCount ?? 1,
       origin: { width: 181, height: 58 },
     }),
-    splitPane: async () => {
+    splitPane: async ({ cwd }: { cwd: string }) => {
+      splitCwds.push(cwd);
       if (options.failureStage === "split") {
         throw new Error("split failed");
       }
@@ -563,7 +696,7 @@ async function runPassCommand(
     : "# Approved handoff\n\nExact text";
   const ctx = {
     mode: "tui",
-    cwd: "/tmp/project",
+    cwd: options.cwd ?? "/tmp/project",
     model: { provider: "test", id: "model" },
     sessionManager: {
       getSessionFile: () =>
@@ -584,8 +717,14 @@ async function runPassCommand(
     },
   } as unknown as ExtensionCommandContext;
 
-  await handler?.("pi continue the MVP", ctx);
-  return { entries, notifications, customCalls };
+  await handler?.(options.commandArgs ?? "pi continue the MVP", ctx);
+  return {
+    entries,
+    notifications,
+    customCalls,
+    preflightCalls,
+    splitCwds,
+  };
 }
 
 function createPassRunner(calls: HerdrInvocation[]): HerdrCommandRunner {

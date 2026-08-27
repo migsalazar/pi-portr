@@ -41,7 +41,7 @@ Portr generates a handoff from the current conversation and opens it for review.
 ## Usage
 
 ```text
-/portr-pass <pi|claude> [--model <model>] <goal>
+/portr-pass <pi|claude> [--model <model>] [--cwd <path>] <goal>
 /portr-ask <pi|claude> [--model <model>] [--preview] [--no-context] [--wait] <question>
 /portr-status [operation-id]
 /portr-focus <operation-id>
@@ -50,6 +50,15 @@ Portr generates a handoff from the current conversation and opens it for review.
 ```
 
 `/portr-pass` builds a bounded handoff, opens it for review, and launches only after you save it. Cancel to stop without creating a destination. Pass requires a persisted origin session.
+
+Use `--cwd` to launch Pass in an existing, user-prepared directory or Git worktree. Relative paths resolve from the origin working directory; paths containing spaces must be quoted. For example, after creating a worktree yourself:
+
+```text
+git worktree add -b feature-worktree ../feature-worktree
+/portr-pass pi --cwd ../feature-worktree Continue the implementation
+```
+
+Portr never creates, integrates, or cleans up worktrees. Selecting `--cwd` does not copy uncommitted changes, staged changes, ignored files, or other filesystem state from the origin.
 
 `/portr-ask` opens a read-only Pi or Claude session. It runs asynchronously by default and delivers the result as a follow-up; use `--wait` to block, `--preview` to edit the prompt, or `--no-context` to send only the question. Async Ask requires a persisted origin session.
 

@@ -139,6 +139,26 @@ test("restorePassReceipts keeps the latest valid receipt", () => {
   );
 });
 
+test("restorePassReceipts preserves cwd and accepts historical receipts without it", () => {
+  const current = passReceipt({ cwd: "/tmp/feature-worktree" });
+  const historical = passReceipt({
+    operationId: "pass-historical",
+  });
+  const malformed = passReceipt({
+    operationId: "pass-malformed",
+    cwd: "",
+  });
+  const restored = restorePassReceipts([
+    passEntry("current", current),
+    passEntry("historical", historical),
+    passEntry("malformed", malformed),
+  ]);
+
+  assert.equal(restored.get(current.operationId)?.cwd, current.cwd);
+  assert.equal(restored.get(historical.operationId)?.cwd, undefined);
+  assert.equal(restored.has(malformed.operationId), false);
+});
+
 test("hasAskResultMessage matches durable delivery by operation ID", () => {
   const entries: SessionEntry[] = [
     {

@@ -82,6 +82,7 @@ export interface PassReceipt {
   originSession: string;
   target: "pi" | "claude";
   model?: string;
+  cwd?: string;
   goal: string;
   approvedPrompt: string;
   deliveryStatus: PassDeliveryStatus;
@@ -200,6 +201,7 @@ export function isPassReceipt(value: unknown): value is PassReceipt {
     !isNonEmptyString(value.originSession) ||
     (value.target !== "pi" && value.target !== "claude") ||
     (value.model !== undefined && !isNonEmptyString(value.model)) ||
+    (value.cwd !== undefined && !isNonEmptyString(value.cwd)) ||
     !isNonEmptyString(value.goal) ||
     !isNonEmptyString(value.approvedPrompt) ||
     !isPassDeliveryStatus(value.deliveryStatus) ||
