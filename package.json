@@ -1,6 +1,6 @@
 {
   "name": "pi-portr",
-  "version": "0.1.2",
+  "version": "0.1.3",
   "description": "Hand off work and ask questions across visible, independent agent sessions.",
   "type": "module",
   "license": "MIT",
