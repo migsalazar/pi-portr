@@ -55,12 +55,13 @@ test("Claude selection prompt preserves the intended transfer facts", () => {
   assert.doesNotMatch(prompt, /Prior Portr consultation:/);
 });
 
-test("Claude boundary prompt reaches the current context and prompt limits", () => {
+test("Claude boundary prompt preserves maximum context without per-line overhead", () => {
   const marker = "PORTR_INTEGRATION_00000000_0000_0000_0000_000000000000";
   const prompt = buildBoundaryPrompt(marker);
 
-  assert.equal(prompt.length, BOUNDARY_PROMPT_CHARACTERS);
-  assert.equal(Buffer.byteLength(prompt, "utf8"), BOUNDARY_PROMPT_CHARACTERS);
+  assert.ok(prompt.length < BOUNDARY_CONTEXT_CHARACTERS + 1_000);
+  assert.equal(Buffer.byteLength(prompt, "utf8"), prompt.length);
+  assert.doesNotMatch(prompt, /^> /m);
   assert.match(prompt, new RegExp(`${marker}_BEGIN`));
   assert.match(prompt, new RegExp(`${marker}_MIDDLE`));
   assert.match(prompt, new RegExp(`${marker}_END`));
@@ -501,8 +502,8 @@ function buildBoundaryPrompt(marker: string): string {
     context,
     `Reply with ${marker} exactly once and nothing else.`,
   );
-  assert.equal(prompt.length, BOUNDARY_PROMPT_CHARACTERS);
-  assert.equal(Buffer.byteLength(prompt, "utf8"), BOUNDARY_PROMPT_CHARACTERS);
+  assert.ok(prompt.length <= BOUNDARY_PROMPT_CHARACTERS);
+  assert.equal(Buffer.byteLength(prompt, "utf8"), prompt.length);
   return prompt;
 }
 

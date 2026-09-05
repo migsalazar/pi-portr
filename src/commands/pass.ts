@@ -1,10 +1,9 @@
 import { randomUUID } from "node:crypto";
 import { stat } from "node:fs/promises";
 import { resolve } from "node:path";
-import {
-  BorderedLoader,
-  type ExtensionAPI,
-  type ExtensionCommandContext,
+import type {
+  ExtensionAPI,
+  ExtensionCommandContext,
 } from "@earendil-works/pi-coding-agent";
 import {
   buildClaudeLaunchArgs,
@@ -20,6 +19,7 @@ import {
   quoteReferenceBlock,
   sanitizeTransferText,
 } from "../context.ts";
+import { generateTransferText } from "../generation.ts";
 import {
   type AgentState,
   createDestinationPane,
@@ -411,7 +411,19 @@ async function handlePass(
   );
 
   const goal = sanitizeTransferText(args.goal);
-  const generated = await generateHandoff(ctx, context.text, goal);
+  const generated = await generateTransferText(ctx, {
+    label: "Generating handoff...",
+    systemPrompt: HANDOFF_SYSTEM_PROMPT,
+    prompt: [
+      "## Quoted origin context",
+      "",
+      quoteReferenceBlock(context.text),
+      "",
+      "## Requested continuation",
+      "",
+      goal,
+    ].join("\n"),
+  });
   if (generated.status === "cancelled") {
     ctx.ui.notify("Pass cancelled", "info");
     return;
@@ -548,88 +560,6 @@ async function handlePass(
     });
     ctx.ui.notify(errorMessage(error), "error");
   }
-}
-
-type GenerationResult =
-  | { status: "ok"; text: string }
-  | { status: "cancelled" }
-  | { status: "error"; message: string };
-
-async function generateHandoff(
-  ctx: ExtensionCommandContext,
-  conversation: string,
-  goal: string,
-): Promise<GenerationResult> {
-  const model = ctx.model;
-  if (model === undefined) {
-    return { status: "error", message: "No model selected" };
-  }
-
-  return ctx.ui.custom<GenerationResult>((tui, theme, _keybindings, done) => {
-    const loader = new BorderedLoader(tui, theme, "Generating handoff...");
-    loader.onAbort = () => done({ status: "cancelled" });
-
-    const generate = async (): Promise<GenerationResult> => {
-      const response = await ctx.modelRegistry.complete(
-        model,
-        {
-          systemPrompt: HANDOFF_SYSTEM_PROMPT,
-          messages: [
-            {
-              role: "user",
-              content: [
-                {
-                  type: "text",
-                  text: [
-                    "## Quoted origin context",
-                    "",
-                    quoteReferenceBlock(conversation),
-                    "",
-                    "## Requested continuation",
-                    "",
-                    goal,
-                  ].join("\n"),
-                },
-              ],
-              timestamp: Date.now(),
-            },
-          ],
-        },
-        {
-          signal: loader.signal,
-          cacheRetention: "none",
-          sessionId: randomUUID(),
-        },
-      );
-
-      if (response.stopReason === "aborted") {
-        return { status: "cancelled" };
-      }
-      if (response.stopReason !== "stop") {
-        return {
-          status: "error",
-          message: `Model stopped with ${response.stopReason}`,
-        };
-      }
-
-      const text = response.content
-        .flatMap((content) => (content.type === "text" ? [content.text] : []))
-        .join("\n")
-        .trim();
-
-      return text.length === 0
-        ? { status: "error", message: "Model returned no text" }
-        : { status: "ok", text };
-    };
-
-    generate()
-      .then(done)
-      .catch((error: unknown) => {
-        done({ status: "error", message: errorMessage(error) });
-      });
-
-    return loader;
-  });
 }
 
 function resolvePassSessionReference(

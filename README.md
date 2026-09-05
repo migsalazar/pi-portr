@@ -38,7 +38,7 @@ Ask another agent for a read-only second opinion and wait for its answer:
 /portr-ask claude --wait Review the current approach and identify the main risk
 ```
 
-Portr opens Claude in a new pane, sends bounded context from the current conversation, and returns the answer here. Omit `--wait` to keep working while the consultation runs.
+Portr automatically summarizes relevant conversation context, opens Claude in a new pane, and sends the summary with your question without opening an editor. The answer returns here. Omit `--wait` to keep working after dispatch while the consultation runs.
 
 Hand off the current task to a new agent session:
 
@@ -70,7 +70,9 @@ git worktree add -b feature-worktree ../feature-worktree
 
 Portr never creates, integrates, or cleans up worktrees. Selecting `--cwd` does not copy uncommitted changes, staged changes, ignored files, or other filesystem state from the origin.
 
-`/portr-ask` opens a read-only Pi, Claude Code, or Codex session. It runs asynchronously by default and delivers the result as a follow-up; use `--wait` to block, `--preview` to edit the prompt, or `--no-context` to send only the question. Async Ask requires a persisted origin session.
+`/portr-ask` opens a read-only Pi, Claude Code, or Codex session. Before dispatch, it uses the currently selected Pi model to synthesize relevant context, then sends it with your original question (subject to payload sanitization), without requiring review. This adds one model call and preparation time; `--model` still selects only the destination model. The summary is instructed to preserve evidence and uncertainty, omit tool activity logs, and not answer the question. Summarization can lose detail; it is not a replay of the original conversation.
+
+After preparation, Ask runs asynchronously by default and delivers the result as a follow-up. Use `--wait` to wait for the answer, `--preview` to edit the prepared prompt, or `--no-context` to skip both context extraction and synthesis. Empty transferable context also skips synthesis. Cancelled, failed, empty, or incomplete generation stops before creating a destination; there is no silent fallback to the raw transcript. Async Ask requires a persisted origin session.
 
 Use `/portr-status` to inspect durable state, `/portr-focus` to return to a destination, and `/portr-collect` after resolving a blocked Ask. Status is recorded state, not live polling.
 
@@ -98,7 +100,7 @@ invoke Herdr directly, retry refused operations, or change the pane limit.
 
 - Current scope is Pi as the origin, Herdr as the orchestration adapter, and Pi, Claude Code, or Codex as destinations; `ask` is asynchronous by default.
 - Context transfer is compaction-aware, semantic, and bounded. It excludes hidden reasoning and unnecessary tool output, and does not make sessions portable or replay-equivalent.
-- `ask` stores append-only snapshots in the origin Pi session. New snapshots include requested model, context size/truncation, harness-level read-only policy, and the final prompt SHA-256 without copying the full prompt. Delivery is reconciliable and idempotent within the current operation-id and origin-session contract, not a universal exactly-once guarantee.
+- `ask` stores append-only snapshots in the origin Pi session. New snapshots include requested destination model, source context size/truncation (before synthesis), harness-level read-only policy, and the final prompt SHA-256 without copying the full prompt. Delivery is reconciliable and idempotent within the current operation-id and origin-session contract, not a universal exactly-once guarantee.
 - `pass` stores the approved prompt and launch receipt, but never automatically resends an approved or failed handoff.
 - Herdr is invoked with argument arrays via `execFile(..., { shell: false })`, avoiding shell interpolation; this does not make arbitrary command execution safe or sandboxed.
 - Pane direction is a best-effort aspect-ratio choice from the origin pane: wide panes split right, otherwise down. Portr does not guarantee minimum resulting dimensions; zoomed or ambiguous layouts are refused before splitting.

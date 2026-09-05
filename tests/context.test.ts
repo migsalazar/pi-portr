@@ -249,10 +249,10 @@ test("preserves compaction and recent context through the Ask prompt", () => {
   assert.match(bounded.text, /TRANSFER-END/);
 
   const prompt = buildAskPrompt(bounded.text, "Which markers survived?");
-  assert.match(prompt, /> DECISION-ONLY-IN-COMPACTION/);
+  assert.match(prompt, /\nDECISION-ONLY-IN-COMPACTION/);
   assert.doesNotMatch(prompt, /TRANSFER-BEGIN/);
-  assert.match(prompt, /> TRANSFER-MIDDLE/);
-  assert.match(prompt, /> TRANSFER-END/);
+  assert.match(prompt, /\nTRANSFER-MIDDLE/);
+  assert.match(prompt, /\nTRANSFER-END/);
 });
 
 test("preserves both ends when compaction alone exceeds the limit", () => {
@@ -351,7 +351,7 @@ test("preserves visible Portr results after Pi context reconstruction", () => {
   assert.match(bounded.text, /ASK-RESULT-MARKER/);
   assert.match(
     buildAskPrompt(bounded.text, "What did the consultation conclude?"),
-    /> ASK-RESULT-MARKER/,
+    /\nASK-RESULT-MARKER/,
   );
 });
 
