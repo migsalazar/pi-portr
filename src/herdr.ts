@@ -543,6 +543,12 @@ function readAgent(result: unknown, operation: string): AgentState {
     sessionRecord.kind === "id"
   ) {
     session = { agent: "claude", kind: "id", value: sessionValue };
+  } else if (
+    sessionValue !== undefined &&
+    sessionRecord?.agent === "codex" &&
+    sessionRecord.kind === "id"
+  ) {
+    session = { agent: "codex", kind: "id", value: sessionValue };
   }
 
   return {

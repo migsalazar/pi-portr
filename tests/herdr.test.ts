@@ -139,6 +139,32 @@ test("HerdrClient preserves a Claude session ID", async () => {
   });
 });
 
+test("HerdrClient preserves a Codex session ID", async () => {
+  const runner: HerdrCommandRunner = async () =>
+    jsonOutput({
+      agent: {
+        agent_status: "idle",
+        pane_id: "w1:p2",
+        agent_session: {
+          agent: "codex",
+          kind: "id",
+          value: "01a06ddf-9cf0-7c62-a759-dab16950e51d",
+        },
+      },
+    });
+  const client = new HerdrClient(runner, { HERDR_ENV: "1" });
+
+  assert.deepEqual(await client.getAgent("worker"), {
+    status: "idle",
+    paneId: "w1:p2",
+    session: {
+      agent: "codex",
+      kind: "id",
+      value: "01a06ddf-9cf0-7c62-a759-dab16950e51d",
+    },
+  });
+});
+
 test("HerdrClient waitForAgent waits without resubmitting a prompt", async () => {
   let args: string[] | undefined;
   let commandTimeout: number | undefined;

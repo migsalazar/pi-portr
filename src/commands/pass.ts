@@ -11,6 +11,10 @@ import {
   resolveClaudeSessionReference,
 } from "../claude-target.ts";
 import {
+  buildCodexLaunchArgs,
+  resolveCodexSessionReference,
+} from "../codex-target.ts";
+import {
   boundText,
   buildTransferContext,
   quoteReferenceBlock,
@@ -38,7 +42,7 @@ import {
 const MAX_HANDOFF_CHARACTERS = 60_000;
 const MAX_PASS_FAILURE_CHARACTERS = 1_000;
 const PASS_USAGE =
-  "Usage: /portr-pass <pi|claude> [--model <model>] [--cwd <path>] <goal>";
+  "Usage: /portr-pass <pi|claude|codex> [--model <model>] [--cwd <path>] <goal>";
 
 export const HANDOFF_SYSTEM_PROMPT = `You create self-contained handoff prompts for coding agents.
 
@@ -53,7 +57,7 @@ Given a quoted conversation context and a requested continuation:
 
 Use clear Markdown headings.`;
 
-export type PassTarget = "pi" | "claude";
+export type PassTarget = "pi" | "claude" | "codex";
 
 export interface PassArguments {
   target: PassTarget;
@@ -127,7 +131,11 @@ export function registerPassCommand(
 
 export function parsePassArguments(input: string): PassArguments {
   const [targetToken, afterTarget] = takeToken(input.trim());
-  if (targetToken !== "pi" && targetToken !== "claude") {
+  if (
+    targetToken !== "pi" &&
+    targetToken !== "claude" &&
+    targetToken !== "codex"
+  ) {
     throw new PassUsageError(PASS_USAGE);
   }
 
@@ -251,10 +259,15 @@ export async function launchPass(
             readOnly: false,
             ...(options.model === undefined ? {} : { model: options.model }),
           })
-        : buildClaudeLaunchArgs({
-            readOnly: false,
-            ...(options.model === undefined ? {} : { model: options.model }),
-          }),
+        : target === "claude"
+          ? buildClaudeLaunchArgs({
+              readOnly: false,
+              ...(options.model === undefined ? {} : { model: options.model }),
+            })
+          : buildCodexLaunchArgs({
+              readOnly: false,
+              ...(options.model === undefined ? {} : { model: options.model }),
+            }),
     );
 
     stage = "prompt";
@@ -625,7 +638,9 @@ function resolvePassSessionReference(
 ): string | undefined {
   return target === "pi"
     ? resolvePiSessionReference(session)
-    : resolveClaudeSessionReference(session);
+    : target === "claude"
+      ? resolveClaudeSessionReference(session)
+      : resolveCodexSessionReference(session);
 }
 
 function formatDestinationCwd(cwd: string): string {

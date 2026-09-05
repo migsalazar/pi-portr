@@ -40,7 +40,7 @@ export interface AsyncAskOperation {
   version: typeof ASYNC_ASK_STATE_VERSION;
   kind: "ask";
   operationId: string;
-  target: "pi" | "claude";
+  target: "pi" | "claude" | "codex";
   status: OperationStatus;
   originSession: string;
   question: string;
@@ -48,7 +48,7 @@ export interface AsyncAskOperation {
   requestedModel?: string;
   contextCharacters?: number;
   contextTruncated?: true;
-  readOnlyPolicy?: "harness-tools";
+  readOnlyPolicy?: "harness-tools" | "codex-sandbox";
   promptSha256?: string;
   cwd?: string;
   agentName: string;
@@ -80,7 +80,7 @@ export interface PassReceipt {
   kind: "pass";
   operationId: string;
   originSession: string;
-  target: "pi" | "claude";
+  target: "pi" | "claude" | "codex";
   model?: string;
   cwd?: string;
   goal: string;
@@ -139,7 +139,9 @@ export function isAsyncAskOperation(
   if (
     value.version !== ASYNC_ASK_STATE_VERSION ||
     value.kind !== "ask" ||
-    (value.target !== "pi" && value.target !== "claude") ||
+    (value.target !== "pi" &&
+      value.target !== "claude" &&
+      value.target !== "codex") ||
     !isOperationStatus(value.status) ||
     !isNonEmptyString(value.operationId) ||
     !isNonEmptyString(value.originSession) ||
@@ -151,7 +153,8 @@ export function isAsyncAskOperation(
       !isNonNegativeSafeInteger(value.contextCharacters)) ||
     (value.contextTruncated !== undefined && value.contextTruncated !== true) ||
     (value.readOnlyPolicy !== undefined &&
-      value.readOnlyPolicy !== "harness-tools") ||
+      value.readOnlyPolicy !== "harness-tools" &&
+      value.readOnlyPolicy !== "codex-sandbox") ||
     (value.promptSha256 !== undefined && !isSha256(value.promptSha256)) ||
     (value.cwd !== undefined && !isNonEmptyString(value.cwd)) ||
     !isNonEmptyString(value.agentName) ||
@@ -166,6 +169,13 @@ export function isAsyncAskOperation(
       value.outcome !== "failed") ||
     (value.result !== undefined && !isStoredAskResult(value.result)) ||
     (value.failure !== undefined && !isAskOperationFailure(value.failure))
+  ) {
+    return false;
+  }
+  if (
+    value.target === "codex" &&
+    (value.readOnlyPolicy !== "codex-sandbox" ||
+      value.promptSha256 === undefined)
   ) {
     return false;
   }
@@ -199,7 +209,9 @@ export function isPassReceipt(value: unknown): value is PassReceipt {
     value.kind !== "pass" ||
     !isNonEmptyString(value.operationId) ||
     !isNonEmptyString(value.originSession) ||
-    (value.target !== "pi" && value.target !== "claude") ||
+    (value.target !== "pi" &&
+      value.target !== "claude" &&
+      value.target !== "codex") ||
     (value.model !== undefined && !isNonEmptyString(value.model)) ||
     (value.cwd !== undefined && !isNonEmptyString(value.cwd)) ||
     !isNonEmptyString(value.goal) ||

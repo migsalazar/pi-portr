@@ -14,6 +14,7 @@ import {
   MAX_RETURN_ANSWER_CHARACTERS,
 } from "../src/async-ask.ts";
 import { resolveClaudeSessionReference } from "../src/claude-target.ts";
+import { resolveCodexSessionReference } from "../src/codex-target.ts";
 import {
   AskUsageError,
   buildAskPrompt,
@@ -66,7 +67,7 @@ test("parseAskArguments preserves question flags after a separator", () => {
 
 test("parseAskArguments rejects invalid or duplicate options", () => {
   assert.throws(
-    () => parseAskArguments("codex --wait question"),
+    () => parseAskArguments("gemini --wait question"),
     AskUsageError,
   );
   assert.throws(() => parseAskArguments("pi --wait"), /question is required/);
@@ -80,7 +81,14 @@ test("parseAskArguments rejects invalid or duplicate options", () => {
   );
 });
 
-test("parseAskArguments parses --no-context in any option position", () => {
+test("parseAskArguments parses Codex and --no-context options", () => {
+  assert.deepEqual(parseAskArguments("codex --wait inspect the API"), {
+    target: "codex",
+    question: "inspect the API",
+    wait: true,
+    preview: false,
+    noContext: false,
+  });
   assert.deepEqual(
     parseAskArguments(
       "claude --preview --no-context --model sonnet ask independently",
@@ -268,6 +276,29 @@ for (const targetCase of [
       '{"hooks":{}}',
     ],
   },
+  {
+    target: "codex" as const,
+    agentName: "portr-ask-codex-test",
+    model: "gpt-5.4",
+    childSession: "01a06ddf-9cf0-7c62-a759-dab16950e51d",
+    session: {
+      agent: "codex",
+      kind: "id",
+      value: "01a06ddf-9cf0-7c62-a759-dab16950e51d",
+    },
+    launchArgs: [
+      "--sandbox",
+      "read-only",
+      "--ask-for-approval",
+      "never",
+      "-c",
+      'approvals_reviewer="user"',
+      "-c",
+      "check_for_update_on_startup=false",
+      "--model",
+      "gpt-5.4",
+    ],
+  },
 ]) {
   test(`launchAsk starts read-only ${targetCase.target} and preserves its session`, async () => {
     const calls: HerdrInvocation[] = [];
@@ -415,6 +446,11 @@ test("target session contracts reject the other harness reference", () => {
     kind: "id" as const,
     value: "12345678-1234-1234-1234-123456789abc",
   };
+  const codexSession = {
+    agent: "codex" as const,
+    kind: "id" as const,
+    value: "01a06ddf-9cf0-7c62-a759-dab16950e51d",
+  };
 
   assert.equal(resolvePiSessionReference(piSession), piSession.value);
   assert.equal(resolvePiSessionReference(claudeSession), undefined);
@@ -423,6 +459,8 @@ test("target session contracts reject the other harness reference", () => {
     claudeSession.value,
   );
   assert.equal(resolveClaudeSessionReference(piSession), undefined);
+  assert.equal(resolveCodexSessionReference(codexSession), codexSession.value);
+  assert.equal(resolveCodexSessionReference(piSession), undefined);
 });
 
 test("launchAsk preserves references when the destination is blocked", async () => {
@@ -733,8 +771,18 @@ test("AsyncAskCoordinator completes a fresh Claude prompt from its operation rec
 
   assert.equal(calls[0]?.args[1], "prompt");
   assert.deepEqual(extracted, [
-    ["claude", "12345678-1234-1234-1234-123456789abc", "operation-async"],
-    ["claude", "12345678-1234-1234-1234-123456789abc", "operation-async"],
+    [
+      "claude",
+      "12345678-1234-1234-1234-123456789abc",
+      "operation-async",
+      undefined,
+    ],
+    [
+      "claude",
+      "12345678-1234-1234-1234-123456789abc",
+      "operation-async",
+      undefined,
+    ],
   ]);
   const deliveredMessage = sent[0]?.message as {
     details?: { target?: string; childSession?: string };
@@ -749,6 +797,50 @@ test("AsyncAskCoordinator completes a fresh Claude prompt from its operation rec
   );
   assert.equal(restored?.status, "completed");
   assert.equal(restored?.target, "claude");
+});
+
+test("AsyncAskCoordinator recovers Codex with its persisted prompt digest", async () => {
+  const operation: AsyncAskOperation = {
+    ...workingOperation(),
+    target: "codex",
+    readOnlyPolicy: "codex-sandbox",
+    promptSha256: "c".repeat(64),
+  };
+  const entries: SessionEntry[] = [operationEntry("working", operation)];
+  const sent: Array<{ message: unknown; options: unknown }> = [];
+  const calls: HerdrInvocation[] = [];
+  const extracted: unknown[][] = [];
+  const runner: HerdrCommandRunner = async (invocation) => {
+    calls.push(invocation);
+    return codexAgentOutput("idle");
+  };
+  const coordinator = new AsyncAskCoordinator(runtimeApi(entries, sent), {
+    createOrchestrator: () => new HerdrClient(runner, { HERDR_ENV: "1" }),
+    extractAnswer: (...args) => {
+      extracted.push(args);
+      return "Codex answer";
+    },
+  });
+
+  coordinator.reconcile(runtimeContext(entries));
+  await waitFor(() => sent.length === 1);
+
+  assert.deepEqual(
+    calls.map((call) => call.args[1]),
+    ["get"],
+  );
+  assert.deepEqual(extracted, [
+    [
+      "codex",
+      "01a06ddf-9cf0-7c62-a759-dab16950e51d",
+      "operation-async",
+      "c".repeat(64),
+    ],
+  ]);
+  assert.equal(
+    restoreAsyncAskOperations(entries).get(operation.operationId)?.status,
+    "completed",
+  );
 });
 
 test("AsyncAskCoordinator recovers without resubmitting or duplicating", async () => {
@@ -1300,6 +1392,23 @@ function claudeAgentOutput(status: "idle" | "working"): {
         agent: "claude",
         kind: "id",
         value: "12345678-1234-1234-1234-123456789abc",
+      },
+    },
+  });
+}
+
+function codexAgentOutput(status: "idle" | "working"): {
+  stdout: string;
+  stderr: string;
+} {
+  return jsonOutput({
+    agent: {
+      agent_status: status,
+      pane_id: "w1:p2",
+      agent_session: {
+        agent: "codex",
+        kind: "id",
+        value: "01a06ddf-9cf0-7c62-a759-dab16950e51d",
       },
     },
   });

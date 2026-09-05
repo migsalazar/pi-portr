@@ -10,6 +10,10 @@ import {
   extractClaudeReceiptAnswer,
   resolveClaudeSessionReference,
 } from "./claude-target.ts";
+import {
+  extractCodexSessionAnswer,
+  resolveCodexSessionReference,
+} from "./codex-target.ts";
 import { boundText, sanitizeTransferText } from "./context.ts";
 import {
   type AgentSessionReference,
@@ -41,7 +45,7 @@ export const MAX_RETURN_ANSWER_CHARACTERS = 40_000;
 const QUESTION_EXCERPT_CHARACTERS = 1_000;
 const MAX_FAILURE_CHARACTERS = 1_000;
 
-export type AskTarget = "pi" | "claude";
+export type AskTarget = "pi" | "claude" | "codex";
 export type AskLaunchStage = "split" | "start" | "prompt_wait";
 
 export interface AskDestination {
@@ -287,7 +291,8 @@ export interface AsyncAskCoordinatorDependencies {
     target: AskTarget,
     childSession: string,
     operationId: string,
-  ): string;
+    promptSha256: string | undefined,
+  ): string | Promise<string>;
   resultRetryTimeoutMs?: number;
   resultRetryIntervalMs?: number;
 }
@@ -296,10 +301,18 @@ function defaultExtractAnswer(
   target: AskTarget,
   childSession: string,
   operationId: string,
-): string {
-  return target === "pi"
-    ? extractPiSessionAnswer(childSession)
-    : extractClaudeReceiptAnswer(operationId, childSession);
+  promptSha256: string | undefined,
+): string | Promise<string> {
+  if (target === "pi") {
+    return extractPiSessionAnswer(childSession);
+  }
+  if (target === "claude") {
+    return extractClaudeReceiptAnswer(operationId, childSession);
+  }
+  if (promptSha256 === undefined) {
+    throw new AskResultError("Codex Ask has no submitted prompt digest");
+  }
+  return extractCodexSessionAnswer(childSession, promptSha256);
 }
 
 export class AsyncAskCoordinator {
@@ -692,6 +705,7 @@ export class AsyncAskCoordinator {
           operation.target,
           childSession,
           operation.operationId,
+          operation.promptSha256,
         ),
       this.dependencies.resultRetryTimeoutMs ?? ASK_RESULT_RETRY_TIMEOUT_MS,
       this.dependencies.resultRetryIntervalMs ?? ASK_RESULT_RETRY_INTERVAL_MS,
@@ -805,14 +819,14 @@ export class AsyncAskCoordinator {
 }
 
 export async function retryAskResultExtraction(
-  extract: () => string,
+  extract: () => string | Promise<string>,
   timeoutMs: number,
   intervalMs: number,
 ): Promise<string> {
   const deadline = Date.now() + timeoutMs;
   while (true) {
     try {
-      return extract();
+      return await extract();
     } catch (error) {
       if (!(error instanceof AskResultError) || Date.now() >= deadline) {
         throw error;
@@ -828,7 +842,9 @@ function resolveAskSessionReference(
 ): string | undefined {
   return target === "pi"
     ? resolvePiSessionReference(session)
-    : resolveClaudeSessionReference(session);
+    : target === "claude"
+      ? resolveClaudeSessionReference(session)
+      : resolveCodexSessionReference(session);
 }
 
 function remainingAskTime(operation: AsyncAskOperation): number {

@@ -14,6 +14,10 @@ import {
   prepareClaudeAskReceipt,
   resolveClaudeSessionReference,
 } from "../../src/claude-target.ts";
+import {
+  extractCodexSessionAnswer,
+  resolveCodexSessionReference,
+} from "../../src/codex-target.ts";
 import { buildAskPrompt, launchAsk } from "../../src/commands/ask.ts";
 import { buildTransferContext } from "../../src/context.ts";
 import { launchPass } from "../../src/commands/pass.ts";
@@ -24,7 +28,7 @@ import {
   resolvePiSessionReference,
 } from "../../src/pi-target.ts";
 
-type IntegrationTarget = "pi" | "claude";
+type IntegrationTarget = "pi" | "claude" | "codex";
 type IntegrationScenario =
   | "marker"
   | "short"
@@ -104,6 +108,7 @@ test("live Herdr destination acknowledges one prompt and yields a durable answer
   const target = readChoice("PORTR_INTEGRATION_TARGET", [
     "pi",
     "claude",
+    "codex",
   ] as const);
   const flow = readChoice("PORTR_INTEGRATION_FLOW", ["pass", "ask"] as const);
   const timeoutMs = readTimeout();
@@ -126,7 +131,6 @@ test("live Herdr destination acknowledges one prompt and yields a durable answer
     scenario === "selection" ||
     scenario === "boundary"
   ) {
-    assert.equal(target, "claude", `${scenario} requires a Claude destination`);
     assert.equal(flow, "ask", `${scenario} requires the Ask flow`);
   }
   const operationId = randomUUID();
@@ -192,6 +196,7 @@ test("live Herdr destination acknowledges one prompt and yields a durable answer
     target,
     destination.childSession,
     operationId,
+    createHash("sha256").update(prompt, "utf8").digest("hex"),
   );
   assertScenarioAnswer(scenario, answer, marker);
 });
@@ -262,7 +267,9 @@ function settledDestination(
   const childSession =
     target === "pi"
       ? resolvePiSessionReference(agent.session)
-      : resolveClaudeSessionReference(agent.session);
+      : target === "claude"
+        ? resolveClaudeSessionReference(agent.session)
+        : resolveCodexSessionReference(agent.session);
   assert.ok(childSession, `Herdr did not return a ${target} session reference`);
   return { paneId, childSession };
 }
@@ -280,12 +287,15 @@ async function extractAnswerWithRetry(
   target: IntegrationTarget,
   childSession: string,
   operationId: string,
+  promptSha256: string,
 ): Promise<string> {
   return retryAskResultExtraction(
     () =>
       target === "pi"
         ? extractPiSessionAnswer(childSession)
-        : extractClaudeReceiptAnswer(operationId, childSession),
+        : target === "claude"
+          ? extractClaudeReceiptAnswer(operationId, childSession)
+          : extractCodexSessionAnswer(childSession, promptSha256),
     2_000,
     100,
   );

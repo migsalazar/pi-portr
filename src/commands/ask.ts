@@ -25,6 +25,10 @@ import {
   prepareClaudeAskReceipt,
 } from "../claude-target.ts";
 import {
+  buildCodexLaunchArgs,
+  extractCodexSessionAnswer,
+} from "../codex-target.ts";
+import {
   buildTransferContext,
   quoteReferenceBlock,
   sanitizeTransferText,
@@ -112,9 +116,13 @@ export function registerAskCommand(
 
 export function parseAskArguments(input: string): AskArguments {
   const [targetToken, afterTarget] = takeToken(input.trim());
-  if (targetToken !== "pi" && targetToken !== "claude") {
+  if (
+    targetToken !== "pi" &&
+    targetToken !== "claude" &&
+    targetToken !== "codex"
+  ) {
     throw new AskUsageError(
-      "Usage: /portr-ask <pi|claude> [--model <model>] [--preview] [--no-context] [--wait] <question>",
+      "Usage: /portr-ask <pi|claude|codex> [--model <model>] [--preview] [--no-context] [--wait] <question>",
     );
   }
 
@@ -264,13 +272,18 @@ export async function startAskDestination(
             readOnly: true,
             ...(options.model === undefined ? {} : { model: options.model }),
           })
-        : buildClaudeLaunchArgs({
-            readOnly: true,
-            ...(options.model === undefined ? {} : { model: options.model }),
-            ...(options.claudeReceipt === undefined
-              ? {}
-              : { askReceipt: options.claudeReceipt }),
-          }),
+        : target === "claude"
+          ? buildClaudeLaunchArgs({
+              readOnly: true,
+              ...(options.model === undefined ? {} : { model: options.model }),
+              ...(options.claudeReceipt === undefined
+                ? {}
+                : { askReceipt: options.claudeReceipt }),
+            })
+          : buildCodexLaunchArgs({
+              readOnly: true,
+              ...(options.model === undefined ? {} : { model: options.model }),
+            }),
     );
     return { agentName: options.agentName, paneId };
   } catch (error) {
@@ -465,6 +478,9 @@ async function handleAsk(
 
   const operationId = randomUUID();
   const agentName = `portr-ask-${operationId.slice(0, 8)}`;
+  const promptSha256 = createHash("sha256")
+    .update(prompt, "utf8")
+    .digest("hex");
   let claudeReceipt: ClaudeAskReceiptLaunch | undefined;
   try {
     claudeReceipt =
@@ -488,9 +504,6 @@ async function handleAsk(
       return;
     }
     ctx.ui.setStatus("portr-ask", `Dispatching ${agentName}`);
-    const promptSha256 = createHash("sha256")
-      .update(prompt, "utf8")
-      .digest("hex");
     let receiptHandedToCoordinator = false;
     try {
       const destinationOptions = {
@@ -519,7 +532,8 @@ async function handleAsk(
         ...(args.model === undefined ? {} : { requestedModel: args.model }),
         contextCharacters: contextText.length,
         ...(contextTruncated ? { contextTruncated: true as const } : {}),
-        readOnlyPolicy: "harness-tools",
+        readOnlyPolicy:
+          args.target === "codex" ? "codex-sandbox" : "harness-tools",
         promptSha256,
         agentName: destination.agentName,
         paneId: destination.paneId,
@@ -573,7 +587,9 @@ async function handleAsk(
       () =>
         launch.target === "pi"
           ? extractPiSessionAnswer(launch.childSession)
-          : extractClaudeReceiptAnswer(operationId, launch.childSession),
+          : launch.target === "claude"
+            ? extractClaudeReceiptAnswer(operationId, launch.childSession)
+            : extractCodexSessionAnswer(launch.childSession, promptSha256),
       ASK_RESULT_RETRY_TIMEOUT_MS,
       ASK_RESULT_RETRY_INTERVAL_MS,
     );

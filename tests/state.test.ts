@@ -71,12 +71,38 @@ test("restoreAsyncAskOperations preserves provenance and historical absence", ()
   );
 });
 
+test("restoreAsyncAskOperations accepts Codex sandbox provenance", () => {
+  const codex = operation({
+    target: "codex",
+    readOnlyPolicy: "codex-sandbox",
+    promptSha256: "b".repeat(64),
+  });
+
+  assert.deepEqual(
+    restoreAsyncAskOperations([customEntry("codex", codex)]).get(
+      codex.operationId,
+    ),
+    codex,
+  );
+});
+
 test("restoreAsyncAskOperations rejects malformed provenance", () => {
   const current = operation();
   const entries = [
     customEntry("negative-context", { ...current, contextCharacters: -1 }),
     customEntry("invalid-policy", { ...current, readOnlyPolicy: "sandbox" }),
     customEntry("invalid-hash", { ...current, promptSha256: "not-a-hash" }),
+    customEntry("codex-no-digest", {
+      ...current,
+      target: "codex",
+      readOnlyPolicy: "codex-sandbox",
+    }),
+    customEntry("codex-wrong-policy", {
+      ...current,
+      target: "codex",
+      readOnlyPolicy: "harness-tools",
+      promptSha256: "b".repeat(64),
+    }),
   ];
 
   assert.equal(restoreAsyncAskOperations(entries).size, 0);
@@ -136,6 +162,15 @@ test("restorePassReceipts keeps the latest valid receipt", () => {
   assert.deepEqual(
     restorePassReceipts(entries).get(approved.operationId),
     delivered,
+  );
+});
+
+test("restorePassReceipts accepts Codex destinations", () => {
+  const codex = passReceipt({ target: "codex" });
+
+  assert.deepEqual(
+    restorePassReceipts([passEntry("codex", codex)]).get(codex.operationId),
+    codex,
   );
 });
 

@@ -2,7 +2,7 @@
 
 Hand off work and ask questions across visible, independent agent sessions.
 
-`pi-portr` is a Pi extension for coordinating work across visible, independent agent sessions. It currently uses Herdr to orchestrate Pi and Claude destinations while keeping context transfer explicit, bounded, and reviewable.
+`pi-portr` is a Pi extension for coordinating work across visible, independent agent sessions. It currently uses Herdr to orchestrate Pi, Claude Code, and Codex destinations while keeping context transfer explicit, bounded, and reviewable.
 
 > Status: MVP delivered and actively maintained.
 
@@ -19,6 +19,16 @@ pi install npm:pi-portr
 > **Security:** Pi packages run with full system access. Review source code before installation.
 
 Install [Herdr](https://herdr.dev), enter a Herdr-managed pane, and start Pi from inside that pane. Starting Pi outside Herdr leaves Portr without the pane context it needs.
+
+Install whichever Herdr integrations correspond to the destinations you use:
+
+```bash
+herdr integration install pi
+herdr integration install claude
+herdr integration install codex
+```
+
+These are one-time, user-level setup commands that let Herdr report native session references to Portr. Review and trust the installed Herdr hooks when Codex first prompts. Portr disables Codex's startup update prompt for destination sessions, but it never bypasses hook trust.
 
 ## Quick start
 
@@ -41,8 +51,8 @@ Portr generates a handoff from the current conversation and opens it for review.
 ## Usage
 
 ```text
-/portr-pass <pi|claude> [--model <model>] [--cwd <path>] <goal>
-/portr-ask <pi|claude> [--model <model>] [--preview] [--no-context] [--wait] <question>
+/portr-pass <pi|claude|codex> [--model <model>] [--cwd <path>] <goal>
+/portr-ask <pi|claude|codex> [--model <model>] [--preview] [--no-context] [--wait] <question>
 /portr-status [operation-id]
 /portr-focus <operation-id>
 /portr-collect <operation-id>
@@ -60,7 +70,7 @@ git worktree add -b feature-worktree ../feature-worktree
 
 Portr never creates, integrates, or cleans up worktrees. Selecting `--cwd` does not copy uncommitted changes, staged changes, ignored files, or other filesystem state from the origin.
 
-`/portr-ask` opens a read-only Pi or Claude session. It runs asynchronously by default and delivers the result as a follow-up; use `--wait` to block, `--preview` to edit the prompt, or `--no-context` to send only the question. Async Ask requires a persisted origin session.
+`/portr-ask` opens a read-only Pi, Claude Code, or Codex session. It runs asynchronously by default and delivers the result as a follow-up; use `--wait` to block, `--preview` to edit the prompt, or `--no-context` to send only the question. Async Ask requires a persisted origin session.
 
 Use `/portr-status` to inspect durable state, `/portr-focus` to return to a destination, and `/portr-collect` after resolving a blocked Ask. Status is recorded state, not live polling.
 
@@ -86,7 +96,7 @@ invoke Herdr directly, retry refused operations, or change the pane limit.
 
 ## Architecture and limits
 
-- Current scope is Pi as the origin, Herdr as the orchestration adapter, and Pi or Claude Code as destinations; `ask` is asynchronous by default.
+- Current scope is Pi as the origin, Herdr as the orchestration adapter, and Pi, Claude Code, or Codex as destinations; `ask` is asynchronous by default.
 - Context transfer is compaction-aware, semantic, and bounded. It excludes hidden reasoning and unnecessary tool output, and does not make sessions portable or replay-equivalent.
 - `ask` stores append-only snapshots in the origin Pi session. New snapshots include requested model, context size/truncation, harness-level read-only policy, and the final prompt SHA-256 without copying the full prompt. Delivery is reconciliable and idempotent within the current operation-id and origin-session contract, not a universal exactly-once guarantee.
 - `pass` stores the approved prompt and launch receipt, but never automatically resends an approved or failed handoff.
@@ -100,10 +110,13 @@ invoke Herdr directly, retry refused operations, or change the pane limit.
 - Pi `>=0.84.0`
 - Herdr `>=0.8.2`
 - Claude Code `>=2.1.196` when using the Claude destination
+- Codex CLI `>=0.153.3` when using the Codex destination
 
 Claude Ask was validated with Claude Code `2.1.241`. It injects session-local `UserPromptSubmit`, `Stop`, and `StopFailure` hooks through `--settings`, correlates the operation with Claude's public `session_id` and `prompt_id`, and reads `last_assistant_message` from a bounded temporary receipt. It does not modify persistent Claude settings or parse Claude's internal JSONL transcript. Missing, disabled, invalid, or ambiguous hooks fail explicitly while preserving pane and session references.
 
-Ask restrictions are harness-level policy, not an operating-system sandbox.
+Codex Ask was validated with Codex CLI `0.153.3` and Herdr's Codex integration `v8`. It launches with `--sandbox read-only --ask-for-approval never`, disables auto-review escalation, correlates the exact submitted prompt by SHA-256, and reads only a completed `final_answer` from Codex's official app-server `thread/read` response. Interrupted, failed, in-progress, empty, mismatched, oversized, or ambiguous results fail explicitly. Portr does not parse Codex's internal JSONL transcript.
+
+Ask restrictions are harness-level policy. Codex additionally enforces local command access with its operating-system sandbox; this is not a complete sandbox for every external integration a harness may expose.
 
 ## Development
 
@@ -122,4 +135,4 @@ PORTR_INTEGRATION_FLOW=pass \
 npm run test:integration
 ```
 
-Targets are `pi` or `claude`; flows are `pass` or `ask`.
+Targets are `pi`, `claude`, or `codex`; flows are `pass` or `ask`.

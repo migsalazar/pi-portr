@@ -7,6 +7,7 @@ import type {
   SessionEntry,
 } from "@earendil-works/pi-coding-agent";
 import { buildClaudeLaunchArgs } from "../src/claude-target.ts";
+import { buildCodexLaunchArgs } from "../src/codex-target.ts";
 import {
   HANDOFF_SYSTEM_PROMPT,
   launchPass,
@@ -40,11 +41,16 @@ test("parsePassArguments parses a Pi goal and optional model", () => {
   );
 });
 
-test("parsePassArguments parses a Claude goal and optional model", () => {
+test("parsePassArguments parses Claude and Codex goals", () => {
   assert.deepEqual(parsePassArguments("claude --model opus continue the MVP"), {
     target: "claude",
     model: "opus",
     goal: "continue the MVP",
+  });
+  assert.deepEqual(parsePassArguments("codex --model gpt-5.4 continue"), {
+    target: "codex",
+    model: "gpt-5.4",
+    goal: "continue",
   });
 });
 
@@ -95,7 +101,7 @@ test("handoff generation requests operational evidence when present", () => {
 });
 
 test("parsePassArguments rejects invalid input", () => {
-  assert.throws(() => parsePassArguments("codex review this"), PassUsageError);
+  assert.throws(() => parsePassArguments("gemini review this"), PassUsageError);
   assert.throws(() => parsePassArguments("pi"), /goal is required/);
   assert.throws(
     () => parsePassArguments("pi --unknown goal"),
@@ -172,18 +178,39 @@ test("buildClaudeLaunchArgs validates and separates destination model arguments"
   );
 });
 
+test("buildCodexLaunchArgs suppresses startup prompts for Pass", () => {
+  assert.deepEqual(
+    buildCodexLaunchArgs({ readOnly: false, model: "gpt-5.4" }),
+    ["-c", "check_for_update_on_startup=false", "--model", "gpt-5.4"],
+  );
+});
+
 for (const targetCase of [
   {
     target: "pi" as const,
     agentName: "portr-pass-test",
     prompt: "Approved handoff\nwith another line",
     model: "anthropic/claude-sonnet",
+    launchArgs: ["--model", "anthropic/claude-sonnet"],
   },
   {
     target: "claude" as const,
     agentName: "portr-pass-claude-test",
     prompt: "Approved Claude handoff\nwith another line",
     model: "sonnet",
+    launchArgs: ["--model", "sonnet"],
+  },
+  {
+    target: "codex" as const,
+    agentName: "portr-pass-codex-test",
+    prompt: "Approved Codex handoff\nwith another line",
+    model: "gpt-5.4",
+    launchArgs: [
+      "-c",
+      "check_for_update_on_startup=false",
+      "--model",
+      "gpt-5.4",
+    ],
   },
 ]) {
   test(`launchPass starts and focuses ${targetCase.target}`, async () => {
@@ -231,8 +258,7 @@ for (const targetCase of [
           "--timeout",
           "30000",
           "--",
-          "--model",
-          targetCase.model,
+          ...targetCase.launchArgs,
         ],
         [
           "agent",
@@ -356,6 +382,7 @@ test("launchPass preserves user focus when origin focus cannot be verified", asy
 for (const targetCase of [
   { target: "pi" as const, agentName: "portr-pass-test" },
   { target: "claude" as const, agentName: "portr-pass-claude-test" },
+  { target: "codex" as const, agentName: "portr-pass-codex-test" },
 ]) {
   test(`launchPass preserves ${targetCase.target} references after prompt failure`, async () => {
     const calls: HerdrInvocation[] = [];

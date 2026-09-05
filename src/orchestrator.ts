@@ -7,11 +7,12 @@ export const AGENT_STATUSES = [
 ] as const;
 
 export type AgentStatus = (typeof AGENT_STATUSES)[number];
-export type AgentTarget = "pi" | "claude";
+export type AgentTarget = "pi" | "claude" | "codex";
 
 export type AgentSessionReference =
   | { agent: "pi"; kind: "path"; value: string }
-  | { agent: "claude"; kind: "id"; value: string };
+  | { agent: "claude"; kind: "id"; value: string }
+  | { agent: "codex"; kind: "id"; value: string };
 
 export interface AgentState {
   status: AgentStatus;
