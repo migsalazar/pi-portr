@@ -64,7 +64,8 @@ export function buildTransferContext(
   }
 
   const compactionIndex = context.messages.findLastIndex(
-    (message) => isRecord(message) && message.role === "compactionSummary",
+    (message: unknown) =>
+      isRecord(message) && message.role === "compactionSummary",
   );
   const compaction = serializeMessage(context.messages[compactionIndex]);
   if (compactionIndex < 0 || compaction === undefined) {
