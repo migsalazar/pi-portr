@@ -203,6 +203,37 @@ test("buildTransferContext follows Pi compaction context", () => {
   assert.doesNotMatch(result.text, /Old context that was compacted/);
 });
 
+test("buildTransferContext follows Pi context edits", () => {
+  const entries: SessionEntry[] = [
+    messageEntry("omitted", null, "OMITTED-ORIGINAL"),
+    messageEntry("replaced", "omitted", "REPLACED-ORIGINAL"),
+    {
+      type: "context_edit",
+      id: "omit-edit",
+      parentId: "replaced",
+      timestamp: "2026-01-01T00:00:02.000Z",
+      targetId: "omitted",
+      replacement: null,
+    },
+    {
+      type: "context_edit",
+      id: "replace-edit",
+      parentId: "omit-edit",
+      timestamp: "2026-01-01T00:00:03.000Z",
+      targetId: "replaced",
+      replacement: { content: "REPLACEMENT" },
+    },
+    messageEntry("recent", "replace-edit", "RECENT"),
+  ];
+
+  const result = buildTransferContext(contextSession(entries, "recent"));
+
+  assert.doesNotMatch(result.text, /OMITTED-ORIGINAL/);
+  assert.doesNotMatch(result.text, /REPLACED-ORIGINAL/);
+  assert.match(result.text, /REPLACEMENT/);
+  assert.match(result.text, /RECENT/);
+});
+
 test("preserves compaction and recent context through the Ask prompt", () => {
   const recent = [
     "TRANSFER-BEGIN",
