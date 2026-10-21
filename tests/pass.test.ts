@@ -1,10 +1,12 @@
 import assert from "node:assert/strict";
 import { resolve } from "node:path";
 import test from "node:test";
-import type {
-  ExtensionAPI,
-  ExtensionCommandContext,
-  SessionEntry,
+import {
+  createReadOnlyTools,
+  parseArgs,
+  type ExtensionAPI,
+  type ExtensionCommandContext,
+  type SessionEntry,
 } from "@earendil-works/pi-coding-agent";
 import { buildClaudeLaunchArgs } from "../src/claude-target.ts";
 import { buildCodexLaunchArgs } from "../src/codex-target.ts";
@@ -153,6 +155,18 @@ test("buildPiLaunchArgs separates read-only and destination model arguments", ()
   assert.deepEqual(
     buildPiLaunchArgs({ readOnly: true, model: "anthropic/claude-sonnet" }),
     ["--tools", "read,grep,find,ls", "--model", "anthropic/claude-sonnet"],
+  );
+});
+
+test("Pi accepts Portr's read-only Ask launch policy", () => {
+  const parsed = parseArgs(
+    buildPiLaunchArgs({ readOnly: true, model: "test/model" }),
+  );
+  assert.deepEqual(parsed.diagnostics, []);
+  assert.equal(parsed.model, "test/model");
+  assert.deepEqual(
+    parsed.tools,
+    createReadOnlyTools(process.cwd()).map((tool) => tool.name),
   );
 });
 
